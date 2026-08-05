@@ -1,5 +1,5 @@
 # Confluence L33ch — Catppuccin
-
+![screenshot](screenshot.png)
 A Windows desktop GUI that pulls Confluence Server / Data Center content down
 to local Markdown or PDF — a whole space, or one page and everything beneath
 it — as a single self-contained PySide6 application.

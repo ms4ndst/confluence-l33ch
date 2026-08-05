@@ -96,6 +96,26 @@ def _svg_pixmap(svg: str, size: QSize) -> QPixmap:
     return pixmap
 
 
+PREFERRED_WINDOW_SIZE = QSize(1040, 840)
+
+
+def _initial_window_size() -> QSize:
+    """The default window size, clamped to fit the screen it opens on.
+
+    The layout's own minimum is what ultimately wins, so this is about not
+    *asking* for a window taller than the display — a 1366x768 laptop would
+    otherwise get a window with its action row off-screen.
+    """
+    screen = QApplication.primaryScreen()
+    if screen is None:
+        return PREFERRED_WINDOW_SIZE
+    available = screen.availableGeometry()
+    return QSize(
+        min(PREFERRED_WINDOW_SIZE.width(), available.width() - 40),
+        min(PREFERRED_WINDOW_SIZE.height(), available.height() - 60),
+    )
+
+
 def _open_in_explorer(path: Path) -> None:
     """Reveal a folder in the platform file manager, best-effort."""
     try:
@@ -183,7 +203,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"Confluence L33ch  v{__version__}")
-        self.resize(1040, 900)
+        self.resize(_initial_window_size())
         # The Catppuccin stylesheet is set on QApplication in app/main.py;
         # we don't override it per-window so flavor switches reach every
         # widget without an extra hop.
@@ -210,11 +230,11 @@ class MainWindow(QMainWindow):
 
         body = QWidget()
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(28, 20, 28, 14)
-        body_layout.setSpacing(14)
+        body_layout.setContentsMargins(24, 12, 24, 10)
+        body_layout.setSpacing(9)
 
         top_row = QHBoxLayout()
-        top_row.setSpacing(14)
+        top_row.setSpacing(12)
         top_row.addWidget(self._build_connection_group(), stretch=1)
         top_row.addWidget(self._build_scope_group(), stretch=1)
         body_layout.addLayout(top_row)
@@ -227,23 +247,26 @@ class MainWindow(QMainWindow):
         self.page_list.setSelectionMode(
             QAbstractItemView.SelectionMode.ExtendedSelection
         )
-        self.page_list.setMinimumHeight(160)
+        self.page_list.setMinimumHeight(96)
         self.page_list.setItemDelegate(PageListDelegate(self.page_list))
         body_layout.addWidget(self.page_list, stretch=2)
 
         body_layout.addWidget(self._build_options_group())
 
-        body_layout.addWidget(self._build_section_label("Progress"))
         self.progress = QProgressBar()
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         self.progress.setFormat("%v / %m")
-        body_layout.addWidget(self.progress)
+        progress_row = QHBoxLayout()
+        progress_row.setSpacing(10)
+        progress_row.addWidget(self._build_section_label("Progress"))
+        progress_row.addWidget(self.progress, stretch=1)
+        body_layout.addLayout(progress_row)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("LogView")
         self.log_view.setReadOnly(True)
-        self.log_view.setMinimumHeight(130)
+        self.log_view.setMinimumHeight(84)
         body_layout.addWidget(self.log_view, stretch=1)
 
         body_layout.addLayout(self._build_action_row())
@@ -331,7 +354,7 @@ class MainWindow(QMainWindow):
         """Re-render the siphon mark in the active accent."""
         if hasattr(self, "_hero_logo"):
             self._hero_logo.setPixmap(
-                _svg_pixmap(leech_svg(current_accent_hex()), QSize(48, 48))
+                _svg_pixmap(leech_svg(current_accent_hex()), QSize(40, 40))
             )
 
     # --- UI builders ---------------------------------------------------
@@ -339,10 +362,10 @@ class MainWindow(QMainWindow):
     def _build_hero(self) -> QFrame:
         hero = QFrame()
         hero.setObjectName("HeroFrame")
-        hero.setFixedHeight(110)
+        hero.setFixedHeight(72)
         layout = QHBoxLayout(hero)
-        layout.setContentsMargins(32, 18, 32, 18)
-        layout.setSpacing(20)
+        layout.setContentsMargins(28, 10, 28, 10)
+        layout.setSpacing(16)
 
         logo_label = QLabel()
         self._hero_logo = logo_label
@@ -373,7 +396,7 @@ class MainWindow(QMainWindow):
     def _build_connection_group(self) -> QGroupBox:
         group = QGroupBox("Connection")
         form = QFormLayout(group)
-        form.setSpacing(8)
+        form.setSpacing(5)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.base_url_edit = QLineEdit(DEFAULT_BASE_URL)
@@ -481,7 +504,7 @@ class MainWindow(QMainWindow):
     def _build_scope_group(self) -> QGroupBox:
         group = QGroupBox("Scope")
         form = QFormLayout(group)
-        form.setSpacing(8)
+        form.setSpacing(5)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.space_edit = QLineEdit()
@@ -576,7 +599,7 @@ class MainWindow(QMainWindow):
     def _build_options_group(self) -> QGroupBox:
         group = QGroupBox("Export options")
         outer = QVBoxLayout(group)
-        outer.setSpacing(10)
+        outer.setSpacing(6)
 
         first = QHBoxLayout()
         first.addWidget(QLabel("Format:"))
@@ -609,7 +632,7 @@ class MainWindow(QMainWindow):
 
         second = QGridLayout()
         second.setHorizontalSpacing(20)
-        second.setVerticalSpacing(6)
+        second.setVerticalSpacing(4)
 
         self.mirror_check = QCheckBox("Mirror page hierarchy as folders")
         self.mirror_check.setToolTip(

@@ -285,7 +285,7 @@ def _build_stylesheet(p: Palette, accent_name: str) -> str:
     }}
     QLabel#HeroTitle {{
         color: {p.text};
-        font-size: 26px;
+        font-size: 22px;
         font-weight: 700;
         background: transparent;
         letter-spacing: -0.5px;
@@ -318,7 +318,7 @@ def _build_stylesheet(p: Palette, accent_name: str) -> str:
         color: {p.text};
         border: 1px solid {p.surface2};
         border-radius: 6px;
-        padding: 8px 10px;
+        padding: 5px 9px;
         selection-background-color: {accent};
         selection-color: {accent_fg};
     }}
@@ -346,7 +346,7 @@ def _build_stylesheet(p: Palette, accent_name: str) -> str:
         color: {p.text};
         border: 1px solid {p.surface2};
         border-radius: 6px;
-        padding: 8px 14px;
+        padding: 6px 13px;
         font-weight: 500;
     }}
     QPushButton:hover   {{ background-color: {p.surface1}; }}
@@ -362,7 +362,7 @@ def _build_stylesheet(p: Palette, accent_name: str) -> str:
         background-color: {accent};
         color: {accent_fg};
         border: none;
-        padding: 12px 24px;
+        padding: 9px 22px;
         font-size: 14px;
         font-weight: 700;
         border-radius: 6px;
@@ -410,8 +410,8 @@ def _build_stylesheet(p: Palette, accent_name: str) -> str:
     QGroupBox {{
         border: 1px solid {p.surface1};
         border-radius: 8px;
-        margin-top: 10px;
-        padding: 12px 12px 10px 12px;
+        margin-top: 8px;
+        padding: 8px 10px 6px 10px;
         background-color: {p.mantle};
         font-weight: 600;
     }}
