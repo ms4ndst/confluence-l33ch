@@ -1,0 +1,9 @@
+# Runtime dependencies for the GUI. `pip install .` reads pyproject.toml
+# instead; this file exists for the `pip install -r` habit.
+PySide6>=6.10
+requests>=2.31
+
+# Optional — only needed by the "Convert MD to PDF" button, which also needs
+# the wkhtmltopdf native binary from https://wkhtmltopdf.org/downloads.html
+markdown>=3.5
+pdfkit>=1.0

@@ -1,0 +1,129 @@
+# ── Secrets & environment ──────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# ── OS ─────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── Editors & IDEs ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+*.swp
+*.swo
+*~
+.sublime-workspace
+.netbeans/
+
+# ── Build output ───────────────────────────────────────────────────────────────
+build/
+dist/
+out/
+bin/
+obj/
+target/
+*.egg-info/
+*.egg/
+
+# ── Compiled artifacts ─────────────────────────────────────────────────────────
+*.exe
+*.dll
+*.so
+*.o
+*.a
+*.lib
+*.class
+*.pyd
+*.pyo
+*.pyc
+*.elf
+*.hex
+*.bin
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+ENV/
+env/
+.Python
+*.pyx.md5
+
+# ── Node.js ────────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp.*
+.yarn/cache
+.yarn/unplugged
+
+# ── Java / JVM ─────────────────────────────────────────────────────────────────
+*.class
+*.jar
+*.war
+*.ear
+
+# ── .NET / C# ──────────────────────────────────────────────────────────────────
+*.nupkg
+*.snupkg
+[Pp]ackages/
+TestResults/
+
+# ── Ruby ───────────────────────────────────────────────────────────────────────
+*.gem
+.bundle/
+vendor/bundle
+
+# ── Rust ───────────────────────────────────────────────────────────────────────
+# Cargo.lock is intentionally NOT excluded (apps should commit it)
+
+# ── Logs & databases ───────────────────────────────────────────────────────────
+*.log
+*.sqlite
+*.sqlite3
+*.db
+logs/
+
+# ── Archives ───────────────────────────────────────────────────────────────────
+*.zip
+*.tar
+*.tar.gz
+*.tar.bz2
+*.rar
+*.7z
+
+# ── Temp & cache ───────────────────────────────────────────────────────────────
+*.tmp
+*.temp
+.cache/
+.tmp/
+temp/
+
+# ── Test coverage ──────────────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+.coverage
+*.lcov
+
+# ── Docker local overrides ─────────────────────────────────────────────────────
+docker-compose.override.yml
