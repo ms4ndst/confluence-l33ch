@@ -22,15 +22,25 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 
+# Covers every platform this app runs on so the lookup needs no branching:
+# a path that doesn't exist on the current OS is simply skipped by the
+# `is_file()` check in `find_wkhtmltopdf`. The Linux entries matter because a
+# GUI launched from a desktop entry (rather than a shell) often inherits a
+# PATH too stripped-down to include a manually-installed binary.
 WKHTML_CANDIDATES = (
     r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe",
     r"C:\Program Files (x86)\wkhtmltopdf\bin\wkhtmltopdf.exe",
+    "/usr/bin/wkhtmltopdf",
+    "/usr/local/bin/wkhtmltopdf",
+    "/snap/bin/wkhtmltopdf",
+    "/opt/homebrew/bin/wkhtmltopdf",
 )
 
 DOWNLOAD_HINT = (
-    "Install wkhtmltopdf from https://wkhtmltopdf.org/downloads.html, then "
-    "either add its 'bin' folder to PATH or point the wkhtmltopdf field at "
-    "wkhtmltopdf.exe."
+    "Install wkhtmltopdf from https://wkhtmltopdf.org/downloads.html (or via "
+    "your package manager, e.g. 'apt install wkhtmltopdf' on Debian/Ubuntu), "
+    "then either add its 'bin' folder to PATH or point the wkhtmltopdf field "
+    "at the binary directly."
 )
 
 # Deliberately plain and print-friendly: a PDF is not a themed UI surface, so
@@ -61,8 +71,8 @@ a { color: #0969da; }
 def find_wkhtmltopdf(explicit: str = "") -> str:
     """Return a usable wkhtmltopdf path, or "" if none can be found.
 
-    Order: the path the user gave, then ``WKHTMLTOPDF_PATH``, then the two
-    default Windows install locations, then PATH.
+    Order: the path the user gave, then ``WKHTMLTOPDF_PATH``, then the known
+    default install locations for Windows/Linux/macOS, then PATH.
     """
     import os
 

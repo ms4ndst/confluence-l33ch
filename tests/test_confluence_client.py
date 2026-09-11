@@ -113,3 +113,92 @@ def test_pdf_candidates_cover_rest_and_ui_endpoints():
     assert urls[0] == "https://wiki.example.com/rest/api/content/55/export/pdf"
     assert any("flyingpdf" in u for u in urls)
     assert all("55" in u for u in urls)
+
+
+class _FakeResponse:
+    def __init__(self, content=b"", status_code=200):
+        self.content = content
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+
+            error = requests.exceptions.HTTPError(response=self)
+            raise error
+
+
+def test_download_attachment_hits_the_download_endpoint():
+    from app.confluence_client import ConfluenceClient
+
+    client = ConfluenceClient(Credentials(base_url="https://wiki.example.com"))
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.append(url)
+        return _FakeResponse(content=b"bytes-here")
+
+    client._session.get = fake_get
+    data = client.download_attachment("42", "a b.png")
+
+    assert data == b"bytes-here"
+    assert calls == [
+        "https://wiki.example.com/download/attachments/42/a%20b.png"
+    ]
+
+
+def test_download_attachment_raises_a_readable_error_on_http_failure():
+    from app.confluence_client import ConfluenceClient, ConfluenceError
+
+    client = ConfluenceClient(Credentials(base_url="https://wiki.example.com"))
+    client._session.get = lambda *a, **k: _FakeResponse(status_code=404)
+
+    try:
+        client.download_attachment("42", "missing.png")
+        assert False, "expected ConfluenceError"
+    except ConfluenceError as exc:
+        assert "404" in str(exc)
+        assert "missing.png" in str(exc)
+
+
+class _FakeJsonResponse(_FakeResponse):
+    def __init__(self, payload, status_code=200):
+        super().__init__(status_code=status_code)
+        self._payload = payload
+        self.headers = {"Content-Type": "application/json"}
+        self.text = ""
+
+    def json(self):
+        return self._payload
+
+
+def test_space_pages_requests_ancestors_so_mirroring_has_something_to_use():
+    """Regression test: without `ancestors` in the expand list, every page
+
+    from a whole-space scan gets an empty `ancestor_titles`, which silently
+    turns "Mirror page hierarchy as folders" into a no-op for that scope.
+    """
+    from app.confluence_client import ConfluenceClient
+
+    client = ConfluenceClient(Credentials(base_url="https://wiki.example.com"))
+    captured_params = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        captured_params.append(params)
+        payload = {
+            "results": [
+                _item(
+                    page_id="9",
+                    title="Child",
+                    ancestors=[{"id": "1", "title": "Parent"}],
+                )
+            ]
+        }
+        return _FakeJsonResponse(payload)
+
+    client._session.get = fake_get
+    pages = client.space_pages("DOCS")
+
+    assert all("ancestors" in p["expand"].split(",") for p in captured_params)
+    assert pages[0].ancestor_titles == ("Parent",)
+    assert pages[0].depth == 1

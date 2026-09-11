@@ -14,8 +14,9 @@ from .theme import ACCENTS, DEFAULT_ACCENT, DEFAULT_FLAVOR, Flavor, apply_catppu
 
 def main() -> int:
     app = QApplication(sys.argv)
-    # Org + app name feed the QStandardPaths config-dir lookup, so on Windows
-    # the settings file lands in %LOCALAPPDATA%\ConfluenceL33ch\ConfluenceL33ch\.
+    # Org + app name feed the QStandardPaths config-dir lookup, so the
+    # settings file lands in %LOCALAPPDATA%\ConfluenceL33ch\ConfluenceL33ch\
+    # on Windows, or ~/.config/ConfluenceL33ch/ConfluenceL33ch/ on Linux.
     app.setApplicationName("ConfluenceL33ch")
     app.setOrganizationName("ConfluenceL33ch")
     app.setApplicationVersion(__version__)

@@ -154,6 +154,27 @@ def test_image_without_resolver_degrades_to_placeholder():
     assert out == "`[image: pic.png]`"
 
 
+def test_attachment_link_uses_the_dedicated_resolver():
+    out = md(
+        "<p><ac:link><ri:attachment ri:filename=\"report.pdf\"/>"
+        "<ac:plain-text-link-body><![CDATA[the report]]></ac:plain-text-link-body>"
+        "</ac:link></p>",
+        attachment_resolver=lambda name: f"IMAGE-RESOLVER/{name}",
+        attachment_link_resolver=lambda name: f"LINK-RESOLVER/{name}",
+    )
+    assert out == "[the report](LINK-RESOLVER/report.pdf)"
+
+
+def test_attachment_link_falls_back_to_attachment_resolver_when_not_given():
+    out = md(
+        "<p><ac:link><ri:attachment ri:filename=\"report.pdf\"/>"
+        "<ac:plain-text-link-body><![CDATA[the report]]></ac:plain-text-link-body>"
+        "</ac:link></p>",
+        attachment_resolver=lambda name: f"IMAGE-RESOLVER/{name}",
+    )
+    assert out == "[the report](IMAGE-RESOLVER/report.pdf)"
+
+
 def test_task_list_checkboxes():
     out = md(
         "<ac:task-list>"

@@ -1,9 +1,11 @@
 """Persistent settings stored in a JSON config file.
 
-The file lives under the OS's standard per-user app-config location, which on
-Windows is ``%LOCALAPPDATA%\\ConfluenceL33ch\\ConfluenceL33ch\\config.json``.
-The path is exposed via :func:`config_path` so the user can inspect or edit it
-directly, and the GUI prints it in the log panel at startup.
+The file lives under the OS's standard per-user app-config location: on
+Windows that's ``%LOCALAPPDATA%\\ConfluenceL33ch\\ConfluenceL33ch\\config.json``,
+on Linux ``~/.config/ConfluenceL33ch/ConfluenceL33ch/config.json`` (or under
+``$XDG_CONFIG_HOME`` if set). The path is exposed via :func:`config_path` so
+the user can inspect or edit it directly, and the GUI prints it in the log
+panel at startup.
 
 Secrets (PAT, session cookie) are persisted in **plain text**, and only when
 the "Remember credentials" box is ticked — the default is off, so a fresh
@@ -35,8 +37,9 @@ def config_path() -> Path:
 
     Relies on QApplication.setOrganizationName / setApplicationName having
     been called before this is invoked (see ``app/main.py``). With those set,
-    ``AppConfigLocation`` on Windows resolves to
-    ``%LOCALAPPDATA%\\ConfluenceL33ch\\ConfluenceL33ch\\`` — we drop
+    ``AppConfigLocation`` resolves to
+    ``%LOCALAPPDATA%\\ConfluenceL33ch\\ConfluenceL33ch\\`` on Windows and
+    ``~/.config/ConfluenceL33ch/ConfluenceL33ch/`` on Linux — we drop
     ``config.json`` into that directory.
     """
     base = QStandardPaths.writableLocation(

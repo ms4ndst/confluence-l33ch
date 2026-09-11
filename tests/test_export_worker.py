@@ -25,6 +25,7 @@ class StubClient:
         self.credentials = credentials
         self.body_calls: list[str] = []
         self.pdf_calls: list[str] = []
+        self.attachment_calls: list[tuple[str, str]] = []
         StubClient.instances.append(self)
 
     def storage_body(self, page_id):
@@ -34,6 +35,10 @@ class StubClient:
     def export_pdf(self, page_id):
         self.pdf_calls.append(page_id)
         return b"%PDF-1.4 stub"
+
+    def download_attachment(self, page_id, filename):
+        self.attachment_calls.append((page_id, filename))
+        return b"fake-image-bytes"
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +65,9 @@ def _run(tmp_path, pages=None, **opts):
     logs: list[str] = []
     worker.log.connect(logs.append)
     worker.finished.connect(
-        lambda s, f, k: results.update(success=s, failure=f, skipped=k)
+        lambda s, f, k, o: results.update(
+            success=s, failure=f, skipped=k, organizational=o
+        )
     )
     worker.run()
     results["logs"] = logs
@@ -92,6 +99,25 @@ def test_internal_link_points_at_the_sibling_file(tmp_path):
     _run(tmp_path)
     text = (tmp_path / "Alpha_1.md").read_text(encoding="utf-8")
     assert "[Beta](Beta_2.md)" in text
+
+
+def test_out_of_scope_link_degrades_to_plain_text_when_disabled(tmp_path):
+    STORAGE["9"] = (
+        "<p>See <ac:link><ri:page ri:content-title=\"Not Exported\" "
+        'ri:space-key="OTHER"/></ac:link>.</p>'
+    )
+    pages = [PageRef(id="9", title="HasExternalLink")]
+    try:
+        result = _run(
+            tmp_path, pages=pages, link_out_of_scope=False, front_matter=False
+        )
+    finally:
+        del STORAGE["9"]
+
+    assert result["success"] == 1
+    text = (tmp_path / "HasExternalLink_9.md").read_text(encoding="utf-8")
+    assert "See Not Exported." in text
+    assert "http" not in text
 
 
 def test_index_is_written(tmp_path):
@@ -181,7 +207,9 @@ def test_cancel_stops_before_the_next_page(tmp_path):
     worker.page_done.connect(lambda *_: worker.cancel())
     finished = {}
     worker.finished.connect(
-        lambda s, f, k: finished.update(success=s, failure=f, skipped=k)
+        lambda s, f, k, o: finished.update(
+            success=s, failure=f, skipped=k, organizational=o
+        )
     )
     worker.run()
     assert finished["success"] == 1
@@ -197,6 +225,95 @@ def test_empty_body_is_reported_as_a_failure(tmp_path):
         del STORAGE["3"]
     assert result["failure"] == 1
     assert any("no storage-format body" in line for line in result["logs"])
+
+
+def test_blank_page_with_subpages_is_organizational_not_failed(tmp_path):
+    parent = PageRef(id="10", title="Container", is_root=True)
+    child = PageRef(id="11", title="Child", depth=1, ancestor_titles=("Container",))
+    STORAGE["10"] = "   "
+    STORAGE["11"] = "<p>Child body.</p>"
+    try:
+        result = _run(tmp_path, pages=[parent, child], mirror_tree=True)
+    finally:
+        del STORAGE["10"]
+        del STORAGE["11"]
+    assert (result["success"], result["failure"], result["organizational"]) == (
+        1,
+        0,
+        1,
+    )
+    assert (tmp_path / "Container" / "Child_11.md").is_file()
+    assert any("became a" in line and "folder" in line for line in result["logs"])
+
+
+def test_download_images_fetches_and_links_locally(tmp_path):
+    STORAGE["5"] = (
+        "<ac:image><ri:attachment ri:filename=\"pic.png\"/></ac:image>"
+    )
+    pages = [PageRef(id="5", title="WithImage")]
+    try:
+        result = _run(tmp_path, pages=pages, download_images=True)
+    finally:
+        del STORAGE["5"]
+
+    assert result["success"] == 1
+    text = (tmp_path / "WithImage_5.md").read_text(encoding="utf-8")
+    assert "![pic.png](images/5_pic.png)" in text
+    assert (tmp_path / "images" / "5_pic.png").read_bytes() == b"fake-image-bytes"
+    assert StubClient.instances[0].attachment_calls == [("5", "pic.png")]
+
+
+def test_images_stay_remote_when_download_images_is_off(tmp_path):
+    STORAGE["6"] = (
+        "<ac:image><ri:attachment ri:filename=\"pic.png\"/></ac:image>"
+    )
+    pages = [PageRef(id="6", title="WithImage2")]
+    try:
+        result = _run(tmp_path, pages=pages)
+    finally:
+        del STORAGE["6"]
+
+    assert result["success"] == 1
+    text = (tmp_path / "WithImage2_6.md").read_text(encoding="utf-8")
+    assert "download/attachments/6/pic.png" in text
+    assert not (tmp_path / "images").exists()
+
+
+def test_download_linked_files_fetches_and_links_locally(tmp_path):
+    STORAGE["7"] = (
+        "<p><ac:link><ri:attachment ri:filename=\"report.pdf\"/>"
+        "<ac:plain-text-link-body><![CDATA[the report]]>"
+        "</ac:plain-text-link-body></ac:link></p>"
+    )
+    pages = [PageRef(id="7", title="WithFile")]
+    try:
+        result = _run(tmp_path, pages=pages, download_linked_files=True)
+    finally:
+        del STORAGE["7"]
+
+    assert result["success"] == 1
+    text = (tmp_path / "WithFile_7.md").read_text(encoding="utf-8")
+    assert "[the report](files/7_report.pdf)" in text
+    assert (tmp_path / "files" / "7_report.pdf").read_bytes() == b"fake-image-bytes"
+    assert StubClient.instances[0].attachment_calls == [("7", "report.pdf")]
+
+
+def test_linked_files_stay_remote_when_download_linked_files_is_off(tmp_path):
+    STORAGE["8"] = (
+        "<p><ac:link><ri:attachment ri:filename=\"report.pdf\"/>"
+        "<ac:plain-text-link-body><![CDATA[the report]]>"
+        "</ac:plain-text-link-body></ac:link></p>"
+    )
+    pages = [PageRef(id="8", title="WithFile2")]
+    try:
+        result = _run(tmp_path, pages=pages)
+    finally:
+        del STORAGE["8"]
+
+    assert result["success"] == 1
+    text = (tmp_path / "WithFile2_8.md").read_text(encoding="utf-8")
+    assert "download/attachments/8/report.pdf" in text
+    assert not (tmp_path / "files").exists()
 
 
 def test_unknown_macros_are_reported_once(tmp_path):

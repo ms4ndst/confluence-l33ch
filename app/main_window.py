@@ -68,6 +68,9 @@ from .theme import (
 from .worker import (
     ExportOptions,
     ExportWorker,
+    FILES_DIRNAME,
+    IMAGES_DIRNAME,
+    LOG_FILENAME,
     STATE_FILENAME,
     run_in_thread,
     wait_for_threads,
@@ -219,6 +222,12 @@ class MainWindow(QMainWindow):
         self._auto_export_after_discovery = False
         # UA of the browser that produced the current cookie, if any.
         self._captured_user_agent = ""
+        # Open only while an export or MD→PDF run is in flight — see
+        # _open_run_log_file / _close_run_log_file. Mirrors every line that
+        # reaches the log panel, so a run too long to scroll through (or one
+        # that ran unattended via 'Repeat every') still leaves a file you can
+        # grep afterwards.
+        self._log_file = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -261,6 +270,14 @@ class MainWindow(QMainWindow):
         progress_row.setSpacing(10)
         progress_row.addWidget(self._build_section_label("Progress"))
         progress_row.addWidget(self.progress, stretch=1)
+        self.save_log_button = QPushButton("Save log…")
+        self.save_log_button.setToolTip(
+            "Save everything currently in the log panel below to a text "
+            "file.\nUseful for a run too long to scroll through — e.g. "
+            "finding every\n'! Could not download' line from a large export."
+        )
+        self.save_log_button.clicked.connect(self._save_log)
+        progress_row.addWidget(self.save_log_button)
         body_layout.addLayout(progress_row)
 
         self.log_view = QPlainTextEdit()
@@ -297,10 +314,72 @@ class MainWindow(QMainWindow):
         self._on_auth_mode_changed()
         self._on_repeat_toggled(self.repeat_check.isChecked())
         self._update_count()
-        self.log_view.appendPlainText(
+        self._append_log(
             f"Settings file: {config_path()}\n"
             "Fill in the connection and scope, then click 'Discover pages'."
         )
+
+    # --- Logging ---------------------------------------------------------
+
+    def _append_log(self, text: str) -> None:
+        """Single entry point for every log line, panel or worker signal.
+
+        Mirrors to whichever run log file is currently open, so 'Repeat
+        every' or a huge space export leaves a durable record even if the
+        panel itself scrolls past what anyone actually reads.
+        """
+        self.log_view.appendPlainText(text)
+        if self._log_file is not None:
+            try:
+                self._log_file.write(text + "\n")
+                self._log_file.flush()
+            except OSError:
+                self._log_file = None
+
+    def _open_run_log_file(self, output_dir: Path) -> None:
+        """Start mirroring the log to ``LOG_FILENAME`` in ``output_dir``.
+
+        Overwrites any file from a previous run — this is a "last run"
+        record, not an ever-growing history, so a repeated/scheduled export
+        doesn't quietly accumulate gigabytes of log text.
+        """
+        self._close_run_log_file()
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            self._log_file = (output_dir / LOG_FILENAME).open(
+                "w", encoding="utf-8"
+            )
+        except OSError as exc:
+            self._log_file = None
+            self._append_log(f"! Could not open {LOG_FILENAME} for writing: {exc}")
+
+    def _close_run_log_file(self) -> None:
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except OSError:
+                pass
+            self._log_file = None
+
+    def _save_log(self) -> None:
+        """Save the whole log panel's current contents to a file of the
+        user's choosing — independent of the per-run log file, and covering
+        everything since the app was opened (connection tests, discovery,
+        every export), not just the most recent run."""
+        default_name = (
+            f"confluence-l33ch-log-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save log", default_name, "Text files (*.txt);;All files (*.*)"
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(self.log_view.toPlainText(), encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Could not save log", str(exc))
+            return
+        self._append_log(f"Log saved to {path}")
 
     # --- Theme picker -------------------------------------------------
 
@@ -651,7 +730,16 @@ class MainWindow(QMainWindow):
         self.resolve_links_check.setToolTip(
             "Point links between exported pages at the sibling .md files, so\n"
             "the export is navigable offline. Links to pages outside the\n"
-            "export keep their Confluence URL."
+            "export fall back to 'Link to pages outside the export' below."
+        )
+        self.link_out_of_scope_check = QCheckBox("Link to pages outside the export")
+        self.link_out_of_scope_check.setChecked(True)
+        self.link_out_of_scope_check.setToolTip(
+            "A link to a page not included in this export (a different space,\n"
+            "or one you didn't select) points at its live Confluence URL —\n"
+            "which needs a logged-in browser session to open. Untick this to\n"
+            "render such links as plain text instead of a dead-looking link,\n"
+            "e.g. for an export you'll share with someone without access."
         )
         self.index_check = QCheckBox("Generate index.md")
         self.index_check.setChecked(True)
@@ -659,11 +747,35 @@ class MainWindow(QMainWindow):
             "Write an index.md at the output root listing every exported page,\n"
             "indented by its depth in the tree."
         )
+        self.download_images_check = QCheckBox(
+            "Download images to a central folder"
+        )
+        self.download_images_check.setToolTip(
+            "Fetch embedded images referenced by exported pages into a shared\n"
+            f"'{IMAGES_DIRNAME}/' folder under the output directory, and point\n"
+            "each .md file at its local copy with a relative link.\n"
+            "Off by default: without this, images stay linked to Confluence\n"
+            "and only load for a reader with a logged-in session."
+        )
+        self.download_linked_files_check = QCheckBox(
+            "Download linked files to a central folder"
+        )
+        self.download_linked_files_check.setToolTip(
+            "Fetch files a page *links to* (not embedded images — e.g. a\n"
+            f"linked PDF or .docx) into a shared '{FILES_DIRNAME}/' folder\n"
+            "under the output directory, and point each .md file at its local\n"
+            "copy with a relative link. Independent of 'Download images'.\n"
+            "Off by default: without this, linked files stay pointed at\n"
+            "Confluence and only load for a reader with a logged-in session."
+        )
 
         second.addWidget(self.mirror_check, 0, 0)
         second.addWidget(self.front_matter_check, 0, 1)
         second.addWidget(self.resolve_links_check, 1, 0)
         second.addWidget(self.index_check, 1, 1)
+        second.addWidget(self.download_images_check, 2, 0)
+        second.addWidget(self.download_linked_files_check, 2, 1)
+        second.addWidget(self.link_out_of_scope_check, 3, 0)
         second.setColumnStretch(2, 1)
         outer.addLayout(second)
 
@@ -696,9 +808,12 @@ class MainWindow(QMainWindow):
 
         row.addWidget(QLabel("wkhtmltopdf:"))
         self.wkhtml_edit = QLineEdit()
-        self.wkhtml_edit.setPlaceholderText(
-            r"(blank = look on PATH; e.g. C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe)"
+        example = (
+            r"C:\Program Files\wkhtmltopdf\bin\wkhtmltopdf.exe"
+            if sys.platform.startswith("win")
+            else "/usr/bin/wkhtmltopdf"
         )
+        self.wkhtml_edit.setPlaceholderText(f"(blank = look on PATH; e.g. {example})")
         self.wkhtml_edit.setToolTip(
             "Only needed by 'Convert MD to PDF', which renders the exported\n"
             "Markdown locally. Unrelated to the server-side PDF export format."
@@ -749,7 +864,9 @@ class MainWindow(QMainWindow):
         for cb in (self.remember_check, self.only_modified_check,
                    self.overwrite_check, self.skip_unchanged_check,
                    self.mirror_check, self.front_matter_check,
-                   self.resolve_links_check, self.index_check,
+                   self.resolve_links_check, self.link_out_of_scope_check,
+                   self.index_check,
+                   self.download_images_check, self.download_linked_files_check,
                    self.repeat_check):
             cb.toggled.connect(self._schedule_save)
         self.api_path_combo.currentTextChanged.connect(self._schedule_save)
@@ -782,7 +899,10 @@ class MainWindow(QMainWindow):
             "mirror_tree": self.mirror_check.isChecked(),
             "front_matter": self.front_matter_check.isChecked(),
             "resolve_links": self.resolve_links_check.isChecked(),
+            "link_out_of_scope": self.link_out_of_scope_check.isChecked(),
             "write_index": self.index_check.isChecked(),
+            "download_images": self.download_images_check.isChecked(),
+            "download_linked_files": self.download_linked_files_check.isChecked(),
             "repeat_enabled": self.repeat_check.isChecked(),
             "repeat_minutes": self.repeat_spin.value(),
             "remember_credentials": self.remember_check.isChecked(),
@@ -838,7 +958,10 @@ class MainWindow(QMainWindow):
             ("mirror_tree", self.mirror_check),
             ("front_matter", self.front_matter_check),
             ("resolve_links", self.resolve_links_check),
+            ("link_out_of_scope", self.link_out_of_scope_check),
             ("write_index", self.index_check),
+            ("download_images", self.download_images_check),
+            ("download_linked_files", self.download_linked_files_check),
             ("repeat_enabled", self.repeat_check),
         ):
             if key in cfg:
@@ -974,7 +1097,7 @@ class MainWindow(QMainWindow):
         finally:
             dialog.deleteLater()
         if not accepted or not creds.ok:
-            self.log_view.appendPlainText("Cookie import cancelled.")
+            self._append_log("Cookie import cancelled.")
             return
 
         self.cookie_edit.setText(creds.cookie_header)
@@ -984,17 +1107,17 @@ class MainWindow(QMainWindow):
         # looks exactly like an expired cookie.
         self._captured_user_agent = creds.user_agent
         names = cookie_names(creds.cookie_header)
-        self.log_view.appendPlainText(
+        self._append_log(
             f"Imported {len(names)} cookie(s) from the pasted request."
         )
         if creds.user_agent:
-            self.log_view.appendPlainText(
+            self._append_log(
                 "Browser User-Agent imported too; it will be reused for every "
                 "request made with this cookie."
             )
         if creds.base_url and not self.base_url_edit.text().strip():
             self.base_url_edit.setText(creds.base_url)
-            self.log_view.appendPlainText(
+            self._append_log(
                 f"Base URL taken from the paste: {creds.base_url}"
             )
         self._schedule_save()
@@ -1037,7 +1160,7 @@ class MainWindow(QMainWindow):
             who = ConfluenceClient(creds, timeout=15).whoami()
         except ConfluenceError as exc:
             QMessageBox.critical(self, "Connection failed", str(exc))
-            self.log_view.appendPlainText(f"! Connection test failed: {exc}")
+            self._append_log(f"! Connection test failed: {exc}")
             return
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(
@@ -1049,7 +1172,7 @@ class MainWindow(QMainWindow):
             self.test_button.setText("Test connection")
 
         detail = f"{creds.api_root}\n\n{who.detail}"
-        self.log_view.appendPlainText(f"Connection test: {who.detail}")
+        self._append_log(f"Connection test: {who.detail}")
         if who.authenticated:
             QMessageBox.information(self, "Connected", detail)
         else:
@@ -1104,7 +1227,7 @@ class MainWindow(QMainWindow):
         if self.only_modified_check.isChecked() and not (top_id or top_title):
             modified_since = self._last_sync_time()
             if modified_since is None:
-                self.log_view.appendPlainText(
+                self._append_log(
                     "No previous sync recorded — scanning the whole space."
                 )
 
@@ -1118,8 +1241,8 @@ class MainWindow(QMainWindow):
 
         self.page_list.clear()
         self._update_count()
-        self.log_view.appendPlainText("=" * 60)
-        self.log_view.appendPlainText("Discovering pages…")
+        self._append_log("=" * 60)
+        self._append_log("Discovering pages…")
         self.discover_button.setEnabled(False)
         self.discover_button.setText("Discovering…")
         self.cancel_button.setEnabled(True)
@@ -1127,7 +1250,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Discovering pages…")
 
         worker = DiscoveryWorker(request)
-        worker.log.connect(self.log_view.appendPlainText)
+        worker.log.connect(self._append_log)
         worker.finished.connect(self._on_discovery_finished)
         self._discovery_worker = worker
         self._discovery_thread = run_in_thread(worker)
@@ -1143,7 +1266,7 @@ class MainWindow(QMainWindow):
 
         if error:
             self.statusBar().showMessage("Discovery failed.")
-            self.log_view.appendPlainText(f"! {error}")
+            self._append_log(f"! {error}")
             self._auto_export_after_discovery = False
             QMessageBox.critical(self, "Discovery failed", error)
             return
@@ -1154,7 +1277,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Discovered {len(pages)} page(s).")
 
         if not pages:
-            self.log_view.appendPlainText(
+            self._append_log(
                 "Nothing to export. If you expected results, run 'Test "
                 "connection' — an anonymous session sees an empty space."
             )
@@ -1163,7 +1286,7 @@ class MainWindow(QMainWindow):
 
         if self._auto_export_after_discovery:
             self._auto_export_after_discovery = False
-            self.log_view.appendPlainText("Scheduled run: starting export…")
+            self._append_log("Scheduled run: starting export…")
             self._start_export()
 
     def _add_page(self, page: PageRef) -> None:
@@ -1213,13 +1336,17 @@ class MainWindow(QMainWindow):
             mirror_tree=self.mirror_check.isChecked(),
             front_matter=self.front_matter_check.isChecked(),
             resolve_links=self.resolve_links_check.isChecked(),
+            link_out_of_scope=self.link_out_of_scope_check.isChecked(),
             write_index=self.index_check.isChecked(),
             skip_unchanged=self.skip_unchanged_check.isChecked(),
+            download_images=self.download_images_check.isChecked(),
+            download_linked_files=self.download_linked_files_check.isChecked(),
         )
 
         self.progress.setRange(0, len(pages))
         self.progress.setValue(0)
-        self.log_view.appendPlainText("=" * 60)
+        self._open_run_log_file(options.output_dir)
+        self._append_log("=" * 60)
         self.export_button.setEnabled(False)
         self.discover_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
@@ -1232,7 +1359,7 @@ class MainWindow(QMainWindow):
             options=options,
         )
         worker.progress.connect(self._on_progress)
-        worker.log.connect(self.log_view.appendPlainText)
+        worker.log.connect(self._append_log)
         worker.finished.connect(self._on_export_finished)
         self._worker = worker
         self._thread = run_in_thread(worker)
@@ -1243,7 +1370,9 @@ class MainWindow(QMainWindow):
         if current:
             self.statusBar().showMessage(f"{current} ({done + 1}/{total})")
 
-    def _on_export_finished(self, success: int, failure: int, skipped: int) -> None:
+    def _on_export_finished(
+        self, success: int, failure: int, skipped: int, organizational: int
+    ) -> None:
         self._worker = None
         self._thread = None
         self.export_button.setEnabled(True)
@@ -1252,8 +1381,14 @@ class MainWindow(QMainWindow):
         msg = (
             f"Done — {success} exported, {failure} failed, {skipped} unchanged."
         )
+        if organizational:
+            msg += (
+                f" {organizational} page(s) had no content of their own "
+                "(organizational only)."
+            )
         self.statusBar().showMessage(msg)
-        self.log_view.appendPlainText(msg)
+        self._append_log(msg)
+        self._close_run_log_file()
 
         if self.repeat_check.isChecked():
             self._schedule_next_run()
@@ -1272,7 +1407,7 @@ class MainWindow(QMainWindow):
     def _schedule_next_run(self) -> None:
         minutes = self.repeat_spin.value()
         self._repeat_timer.start(minutes * 60 * 1000)
-        self.log_view.appendPlainText(
+        self._append_log(
             f"Next scheduled run in {minutes} minute(s)."
         )
         self.statusBar().showMessage(
@@ -1301,7 +1436,8 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.log_view.appendPlainText("=" * 60)
+        self._open_run_log_file(Path(out_text))
+        self._append_log("=" * 60)
         self.md_to_pdf_button.setEnabled(False)
         self.progress.setRange(0, 0)
         self.cancel_button.setEnabled(True)
@@ -1313,7 +1449,7 @@ class MainWindow(QMainWindow):
             overwrite=self.overwrite_check.isChecked(),
         )
         worker.progress.connect(self._on_progress)
-        worker.log.connect(self.log_view.appendPlainText)
+        worker.log.connect(self._append_log)
         worker.finished.connect(self._on_md_to_pdf_finished)
         self._pdf_worker = worker
         self._pdf_thread = run_in_thread(worker)
@@ -1327,7 +1463,8 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         msg = f"MD→PDF done — {success} converted, {failure} failed, {skipped} skipped."
         self.statusBar().showMessage(msg)
-        self.log_view.appendPlainText(msg)
+        self._append_log(msg)
+        self._close_run_log_file()
         if failure and not success:
             QMessageBox.warning(
                 self, "Conversion failed",
@@ -1350,11 +1487,12 @@ class MainWindow(QMainWindow):
         # to notice and return. Exiting with a thread still running aborts the
         # process with "QThread: Destroyed while thread is still running".
         if not wait_for_threads(5000):
-            self.log_view.appendPlainText(
+            self._append_log(
                 "! A background thread did not stop in time; exiting anyway."
             )
         # Flush any debounced save before the process exits.
         if self._save_timer.isActive():
             self._save_timer.stop()
             self._persist_settings()
+        self._close_run_log_file()
         super().closeEvent(event)

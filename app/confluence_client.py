@@ -27,6 +27,7 @@ import base64
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Iterator
+from urllib.parse import quote
 
 import requests
 
@@ -286,13 +287,22 @@ class ConfluenceClient:
         with a ``spaceKey`` parameter is what proxied roots (``/wiki/rest/api``,
         ``/confluence/rest/api``) expect. Picking the wrong one returns an
         empty result set rather than an error, so the branch is not optional.
+
+        ``ancestors`` is expanded here too, same as :meth:`descendants` — a
+        whole-space scan feeds ``PageRef.depth``/``ancestor_titles`` just as
+        much as a subtree one does, and both the page list's tree indent and
+        "Mirror page hierarchy as folders" depend on it being populated.
         """
         if self.creds.api_path.strip("/") == "rest/api":
             url = f"{self.creds.api_root}/space/{space_key}/content"
-            params: dict[str, Any] = {"type": "page", "expand": "history"}
+            params: dict[str, Any] = {"type": "page", "expand": "history,ancestors"}
         else:
             url = f"{self.creds.api_root}/content"
-            params = {"spaceKey": space_key, "type": "page", "expand": "history"}
+            params = {
+                "spaceKey": space_key,
+                "type": "page",
+                "expand": "history,ancestors",
+            }
 
         pages: list[PageRef] = []
         for item in self._paginate(
@@ -346,6 +356,32 @@ class ConfluenceClient:
             .get("value", "")
         )
         return body, page
+
+    def download_attachment(self, page_id: str, filename: str) -> bytes:
+        """Fetch one attachment's raw bytes via the Server/DC download path.
+
+        Same endpoint the browser uses to render an embedded image, so it
+        honours whatever auth the session already carries.
+        """
+        base = self.creds.base_url.rstrip("/")
+        url = f"{base}/download/attachments/{page_id}/{quote(filename)}"
+        try:
+            resp = self._session.get(
+                url, headers=self._headers(accept="*/*"), timeout=self.timeout
+            )
+            resp.raise_for_status()
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            raise ConfluenceError(
+                f"HTTP {status} downloading attachment '{filename}' from {url}. "
+                + _http_hint(status)
+            ) from exc
+        except requests.exceptions.RequestException as exc:
+            raise ConfluenceError(
+                f"Could not download attachment '{filename}' from {url} "
+                f"({type(exc).__name__}: {exc})."
+            ) from exc
+        return resp.content
 
     def pdf_url_candidates(self, page_id: str) -> list[str]:
         """PDF export URLs to try in order, REST first then the UI action.

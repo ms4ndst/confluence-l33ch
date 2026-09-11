@@ -1,8 +1,8 @@
 # Confluence L33ch — Catppuccin
 ![screenshot](screenshot.png)
-A Windows desktop GUI that pulls Confluence Server / Data Center content down
-to local Markdown or PDF — a whole space, or one page and everything beneath
-it — as a single self-contained PySide6 application.
+A desktop GUI — **Windows and Linux** — that pulls Confluence Server / Data
+Center content down to local Markdown or PDF — a whole space, or one page and
+everything beneath it — as a single self-contained PySide6 application.
 
 What it does:
 
@@ -37,40 +37,83 @@ Version 0.1.0. Targets Confluence **Server / Data Center**; Cloud is untested
 ## Install
 
 Requires Python 3.10+. Runtime dependencies are just **PySide6** and
-**requests**.
+**requests**. Tested on Windows and Linux; nothing in the app is
+platform-specific (see [Platform notes](#platform-notes)).
+
+**Windows:**
 
 ```powershell
 cd C:\Users\<you>\Code\Repo\confluence_l33ch
 py -m pip install .
 ```
 
+**Linux:**
+
+```bash
+cd ~/confluence_l33ch
+python3 -m pip install .
+```
+
+On Debian/Ubuntu, PySide6's Qt platform plugin needs a handful of system
+libraries that aren't pulled in by pip — if the app fails to start with an
+error about `xcb` or a missing shared library, install them first:
+
+```bash
+sudo apt install libxcb-cursor0 libxkbcommon-x11-0 libgl1
+```
+
 With the optional local Markdown→PDF support (`markdown` + `pdfkit`):
 
-```powershell
-py -m pip install ".[pdf]"
+```bash
+python3 -m pip install ".[pdf]"    # py -m pip install ".[pdf]" on Windows
 ```
 
 Or for development, without installing the package:
 
-```powershell
-py -m pip install -r requirements.txt
+```bash
+python3 -m pip install -r requirements.txt    # py -m pip install -r requirements.txt on Windows
 ```
 
 The **Convert MD to PDF** button additionally needs the native
 [wkhtmltopdf](https://wkhtmltopdf.org/downloads.html) binary. Everything else
 works without it — the **PDF** export *format* asks Confluence for its own
-render and involves no local tooling.
+render and involves no local tooling. On Linux, install it with your package
+manager (`sudo apt install wkhtmltopdf` on Debian/Ubuntu, `sudo dnf install
+wkhtmltopdf` on Fedora) rather than the generic download, so it lands on PATH.
 
 ## Run
 
-```powershell
+```bash
 confluence-l33ch          # installed entry point (no console window)
-py -m app.main            # from a checkout
+python3 -m app.main       # from a checkout
+```
+
+```powershell
+confluence-l33ch          # installed entry point (no console window), Windows
+py -m app.main            # from a checkout, Windows
 ```
 
 If you have several Python installations, use the one that has PySide6 — e.g.
-`py -3.14 -m app.main`. The app is Windows-first but nothing in it is
-Windows-only except the default wkhtmltopdf search paths.
+`py -3.14 -m app.main` on Windows, `python3.13 -m app.main` on Linux.
+
+### Platform notes
+
+The app is built entirely on Qt (PySide6) + `requests`, with no OS-specific
+dependency, so the same checkout runs unmodified on Windows and Linux:
+
+* **Settings** live under the OS's standard per-user config location either
+  way — see [Configuration](#configuration) for the exact path on each.
+* **"Open folder"** uses Windows Explorer, `xdg-open` on Linux, and `open` on
+  macOS to reveal the output directory.
+* **wkhtmltopdf lookup** checks the field, then `WKHTMLTOPDF_PATH`, then the
+  common install locations for every platform (`C:\Program Files\...` and
+  also `/usr/bin`, `/usr/local/bin`, `/snap/bin`), then `PATH`.
+* Filenames are sanitised against the *Windows*-invalid character set even
+  when exporting on Linux — deliberately, so an export folder stays portable
+  if it's later copied to or shared with someone on Windows.
+
+Only macOS is untested (though "Open folder" already handles it); file an
+issue if something doesn't behave there.
 
 ---
 
@@ -247,10 +290,11 @@ re-downloading their bodies.
 
 ### 3. Output directory
 
-**Browse…** picks it; **Open folder** reveals it in Explorer once it exists (it
-is created on the first export). The directory is also where
-`.l33ch-state.json` and `index.md` are written, and what **Convert MD to PDF**
-reads.
+**Browse…** picks it; **Open folder** reveals it in the system file manager
+(Explorer, or the Linux desktop's default) once it exists (it is created on
+the first export). The directory is also where
+`.l33ch-state.json`, `index.md` and `l33ch-log.txt` are written, and what
+**Convert MD to PDF** reads.
 
 ### 4. Export options
 
@@ -261,14 +305,26 @@ reads.
 | **Skip unchanged pages** | off | Compares each page's timestamp against `.l33ch-state.json` and skips matches. This is what makes a repeat run cheap. |
 | **Mirror page hierarchy as folders** | off | Recreates the parent/child structure as directories instead of writing every page side by side. Intra-export links are rewritten as relative paths either way. |
 | **Write YAML front matter** | on | Prepends title, page ID, space, source URL, version and last-modified stamp, so every file traces back to the page it came from. |
-| **Rewrite wiki links to local files** | on | Links between exported pages point at the sibling `.md`. Links out of the export keep their Confluence URL. |
+| **Rewrite wiki links to local files** | on | Links between exported pages point at the sibling `.md`. Links out of the export fall back to **Link to pages outside the export** below. |
+| **Link to pages outside the export** | on | A link to a page not in this export (a different space, or one you didn't select) points at its live Confluence URL, which needs a logged-in browser session to open. Off renders it as plain text instead — useful for an export you'll share with someone without access, or read offline. |
 | **Generate index.md** | on | An `index.md` at the output root listing every page, indented by depth. |
+| **Download images to a central folder** | off | Fetches *embedded* images into a shared `images/` folder under the output directory and rewrites each `.md` to a relative link, instead of pointing at the live Confluence URL. See [Downloaded images and files](#downloaded-images-and-files). |
+| **Download linked files to a central folder** | off | Fetches files a page *links to* (a linked PDF, `.docx`, etc. — not an embedded image) into a shared `files/` folder, independently of the images option. See [Downloaded images and files](#downloaded-images-and-files). |
 | **Repeat every** | off, 60 min | Re-runs discovery + export on a timer (1–1440 minutes) so the export tracks the space unattended. Pair it with *Skip unchanged pages*. A scheduled run started while another is in flight is deferred rather than doubled up. |
 
 Then click **Leech pages**. The progress bar counts pages, and per-page
 results, skips and conversion caveats stream into the log panel. **Cancel**
 stops after the page in flight — workers check the flag between pages, so no
 half-written file is left behind.
+
+The closing summary line reads `Done — N exported, M failed, K unchanged`,
+plus a trailing `J page(s) had no content of their own (organizational
+only)` whenever that applies. That last group is pages Confluence uses purely
+to group other pages in the tree — no body of their own, just a title and
+children. With **Mirror page hierarchy as folders** on, that title is still
+used as the folder those children land in; without it, the page is simply
+skipped. Either way it's counted separately from real failures, since there
+was never anything to write.
 
 Closing the window cancels any running work and waits up to five seconds for
 the threads to stop before exiting.
@@ -287,8 +343,8 @@ wkhtmltopdf. Use it when the server's own PDF export is disabled.
   Roman with unruled tables.
 * **Test** reports the resolved binary path and its version, so you find out
   before a batch whether the path is right.
-* Lookup order for the binary: the field, then `WKHTMLTOPDF_PATH`, then the two
-  default Windows install locations, then `PATH`.
+* Lookup order for the binary: the field, then `WKHTMLTOPDF_PATH`, then the
+  default install locations for Windows/Linux/macOS, then `PATH`.
 
 ---
 
@@ -300,6 +356,7 @@ Flat (default):
 <output>/
   index.md
   .l33ch-state.json
+  l33ch-log.txt
   Release Notes_123456.md
   Getting Started_123457.md
 ```
@@ -309,12 +366,16 @@ Mirrored (**Mirror page hierarchy** on):
 ```text
 <output>/
   index.md
+  l33ch-log.txt
   Product Docs_100.md
   Product Docs/
     Getting Started_101.md
     Getting Started/
       Install_102.md
 ```
+
+`l33ch-log.txt` always sits at the output root (never inside a mirrored
+subfolder) — see [`l33ch-log.txt`](#l33ch-logtxt) below.
 
 Filenames are `<sanitised title>_<page id>.<ext>`. The page ID makes them
 unique and stable across renames, and the whole scheme is deterministic, so an
@@ -323,6 +384,46 @@ Sanitising replaces the Windows-invalid
 characters and control chars with `_`, collapses repeats, trims leading and
 trailing dots and spaces, and caps the name at 180 characters so directory +
 name stays under `MAX_PATH`.
+
+### Downloaded images and files
+
+Two independent options, off by default, cover the two ways a page can
+reference an attachment:
+
+* **Download images to a central folder** — *embedded* images (`ac:image`)
+  land in a shared `images/` folder.
+* **Download linked files to a central folder** — files a page merely
+  *links* to (`ac:link` to an attachment — a PDF, `.docx`, spreadsheet, etc.,
+  not rendered inline) land in a shared `files/` folder.
+
+Either one (or both) produces a layout like this at the output root,
+regardless of **Mirror page hierarchy**:
+
+```text
+<output>/
+  index.md
+  images/
+    123457_diagram.png
+    123457_screenshot.png
+  files/
+    123457_handbook.pdf
+  Getting Started_123457.md
+```
+
+Each file is named `<page id>_<attachment filename>` so two pages that both
+have a `diagram.png` don't collide, and the `.md` links to it with a path
+relative to its own location — `images/123457_diagram.png` from a flat
+layout, `../images/123457_diagram.png` from one level into a mirrored tree
+(and the same shape for `files/`). A file already present is reused rather
+than re-fetched unless **Overwrite existing files** is on. If a particular
+download fails (permissions, a deleted attachment), that one reference falls
+back to the live Confluence link and the log says so — it doesn't fail the
+whole page.
+
+With both options off (the default), images and file attachments are left
+pointing at `/download/attachments/<pageId>/<file>` on the server, which
+resolves for anyone with a logged-in browser session but nothing is fetched
+locally.
 
 ### Front matter
 
@@ -377,6 +478,25 @@ that is what **Skip unchanged pages** compares against. `last_sync` is what
 **Only pages changed since last sync** feeds into the space listing. Delete the
 file to force a full re-export.
 
+### `l33ch-log.txt`
+
+Every line that reaches the log panel during an export or **Convert MD to
+PDF** run is also mirrored to `l33ch-log.txt` at the output root — the exact
+same text, written as it happens. It's overwritten at the start of each run
+(a "last run" record, not an ever-growing history), which matters for large
+spaces or a scheduled **Repeat every** run: the log panel itself isn't
+practical to scroll or copy from at thousands of lines, but the file is
+`grep`-able:
+
+```bash
+grep "Could not download" l33ch-log.txt
+```
+
+Independently, the **Save log…** button (next to the progress bar) saves
+*everything currently in the log panel* — including connection tests,
+discovery, and every run since the app was opened, not just the last one —
+to a file of your choosing.
+
 ---
 
 ## Conversion fidelity
@@ -408,10 +528,13 @@ kept tight rather than loose. That is the same set of markdownlint rules
 
 Things it deliberately does **not** do, and says so in the log:
 
-* **Attachments are not downloaded.** Image and file references point at
-  `/download/attachments/<pageId>/<file>` on the server, which resolves for
-  anyone with a logged-in browser session. A dead relative link to a file
-  that was never fetched would be worse.
+* **Attachments are not downloaded by default.** Image and file references
+  point at `/download/attachments/<pageId>/<file>` on the server, which
+  resolves for anyone with a logged-in browser session. A dead relative link
+  to a file that was never fetched would be worse. Tick **Download images to
+  a central folder** and/or **Download linked files to a central folder** to
+  fetch them instead — see [Downloaded images and
+  files](#downloaded-images-and-files).
 * **Navigation macros are dropped** — `toc`, `children`, `pagetree`,
   `livesearch` and friends. The exported tree and `index.md` are the
   navigation.
@@ -426,10 +549,12 @@ Things it deliberately does **not** do, and says so in the log:
 Settings auto-save 500 ms after any change to:
 
 ```text
-%LOCALAPPDATA%\ConfluenceL33ch\ConfluenceL33ch\config.json
+%LOCALAPPDATA%\ConfluenceL33ch\ConfluenceL33ch\config.json      (Windows)
+~/.config/ConfluenceL33ch/ConfluenceL33ch/config.json           (Linux)
 ```
 
-The path is printed in the log panel at startup. A missing or corrupt file is
+The Linux path honours `$XDG_CONFIG_HOME` if it's set. The path is printed in
+the log panel at startup. A missing or corrupt file is
 not an error — the app starts with its defaults and the next save rewrites it
 cleanly. Writes go to a temporary file and are moved into place, so an
 interrupted write cannot leave a config that fails to parse.
@@ -442,9 +567,10 @@ save, because the config is rebuilt from scratch each time rather than merged.
 
 Nothing site-specific is baked into the source: there is no default instance
 URL, space key or credential anywhere in the code. `config.json` lives under
-`%LOCALAPPDATA%`, and exported content plus `.l33ch-state.json` land in
-whichever output directory you choose — none of it inside the checkout. Point
-the tool at your own instance and nothing about anyone else's comes with it.
+the OS's per-user config directory (above), and exported content plus
+`.l33ch-state.json` land in whichever output directory you choose — none of
+it inside the checkout. Point the tool at your own instance and nothing about
+anyone else's comes with it.
 
 Environment variables, all optional and used only as fallbacks when the
 corresponding field is blank:
@@ -459,8 +585,11 @@ corresponding field is blank:
 
 ## Known limitations
 
-* **Attachments are not downloaded.** References point at the server; see
-  *Conversion fidelity*.
+* **Attachments are not downloaded unless you turn it on.** By default,
+  references point at the server; see *Conversion fidelity* and *Downloaded
+  images*.
+* **macOS is untested.** "Open folder" already has an `open`-based branch for
+  it, but nothing else has been run there.
 * **Confluence Cloud is untested.** The client targets the Server/DC REST API.
   Basic auth with an email + API token may work for simple cases, but Cloud's
   v2 API differs and nothing here is verified against it.
@@ -527,16 +656,22 @@ instance answers unauthenticated REST calls with `200` and a login page, so
 
 ### Tests
 
+```bash
+python3 -m pip install pytest
+python3 -m pytest tests -q
+```
+
 ```powershell
 py -m pip install pytest
 py -m pytest tests -q
 ```
 
-121 tests cover the storage converter (every construct, plus malformed markup),
+142 tests cover the storage converter (every construct, plus malformed markup),
 the client's header building and ancestry→depth maths, cURL/header paste
 parsing and the probe URL, scope resolution and its error paths, the export
-worker's filename/link/front-matter logic, a full export run against a stubbed
-REST client (formats, incremental skip, mirrored layout, cancellation), and
+worker's filename/link/front-matter logic (including the central image/file
+download paths), a full export run against a stubbed REST client (formats,
+incremental skip, mirrored layout, cancellation), and
 settings persistence, and worker-thread ownership. The thread tests abort the run rather than fail an
 assertion if they regress — that is the nature of the bug they guard.
 
@@ -558,11 +693,13 @@ Live HTTP is not exercised; **Test connection** is the manual equivalent.
 | Cookie imported, then 401 a minute later | Some gateways issue a short-lived session, or the instance invalidated it. Re-import via **Paste from browser…**; if it keeps happening, a PAT is the more durable credential. |
 | Every PDF export fails | The instance has PDF export disabled. Export Markdown and use **Convert MD to PDF**. |
 | Pages export but are nearly empty | The account can list the page but not read its body — a permission problem, not a converter bug. |
-| `wkhtmltopdf not found` | Install it and either add its `bin` to PATH or point the field at `wkhtmltopdf.exe`. |
+| `wkhtmltopdf not found` | Install it (`apt install wkhtmltopdf` on Linux, the installer from wkhtmltopdf.org on Windows) and either add its `bin`/install folder to PATH or point the field at the binary directly. |
+| App won't start on Linux: missing `xcb`/`libGL` etc. | Install the Qt platform-plugin system libraries — see *Install* above (`libxcb-cursor0 libxkbcommon-x11-0 libgl1` on Debian/Ubuntu). |
 | *"Could not resolve the top page"* | On Server/DC page IDs are **numeric** — take the `pageId=` value from the page's URL. A short-link or Cloud-style ID will not resolve. Or clear the ID and use **Top page title**, which must match exactly, including case. |
 | `Missing dependency: pdfkit` / `markdown` | Install the optional extra: `py -m pip install ".[pdf]"`. |
 | Export writes files but `index.md` is absent | Expected for a PDF-only run, or with **Generate index.md** unticked. |
 | A repeat schedule stops producing anything | Almost always an expired cookie. Check the log for 401s and re-import, or switch to a PAT. |
+| "N image(s)/file(s) could not be downloaded" | Check `l33ch-log.txt` in the output directory (or the **Save log…** button) for the specific `! Could not download …` line per attachment — it carries the real HTTP status. 401/403 usually means the download endpoint doesn't accept the same auth as the REST API; 404 means the attachment/page no longer matches; 429 means you were rate-limited on a large export. |
 
 ---
 

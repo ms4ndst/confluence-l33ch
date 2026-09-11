@@ -9,6 +9,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from urllib.parse import quote
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -28,6 +29,20 @@ from .storage_converter import convert_storage
 STATE_FILENAME = ".l33ch-state.json"
 
 INDEX_FILENAME = "index.md"
+
+# Mirrors everything that reaches the GUI's log panel during a run. The GUI
+# (not this module) opens/writes it — see MainWindow._open_run_log_file —
+# but the name lives here so both sides agree on it, same as STATE_FILENAME.
+LOG_FILENAME = "l33ch-log.txt"
+
+# Where downloaded images/attachments land when `download_images` is on, one
+# shared folder under the output root rather than a folder per page.
+IMAGES_DIRNAME = "images"
+
+# Where a linked (not embedded) file attachment lands when `resolve_links` is
+# on — kept separate from IMAGES_DIRNAME so a PDF or .docx linked off a page
+# doesn't end up sitting in a folder named "images".
+FILES_DIRNAME = "files"
 
 
 def sanitize_filename(name: str, max_length: int = 180) -> str:
@@ -54,8 +69,11 @@ class ExportOptions:
     mirror_tree: bool = False        # recreate the page hierarchy as folders
     front_matter: bool = True        # YAML header with id / url / timestamp
     resolve_links: bool = True       # rewrite intra-wiki links to local files
+    link_out_of_scope: bool = True   # link pages outside the export to their live URL
     write_index: bool = True         # emit index.md linking every page
     skip_unchanged: bool = False     # consult .l33ch-state.json and skip
+    download_images: bool = False    # fetch attachments into a shared images/ folder
+    download_linked_files: bool = False  # fetch linked (non-image) files into files/
 
     @property
     def wants_md(self) -> bool:
@@ -71,8 +89,13 @@ class ExportStats:
     succeeded: int = 0
     failed: int = 0
     skipped: int = 0
+    organizational: int = 0  # blank pages kept only as a folder level for subpages
     unknown_macros: Counter = field(default_factory=Counter)
     attachments: int = 0
+    images_downloaded: int = 0
+    images_failed: int = 0
+    files_downloaded: int = 0
+    files_failed: int = 0
 
 
 class ExportWorker(QObject):
@@ -80,7 +103,7 @@ class ExportWorker(QObject):
     page_done = Signal(str, str)         # page_id, destination_path
     page_failed = Signal(str, str)       # page_id, error_message
     log = Signal(str)                    # log line
-    finished = Signal(int, int, int)     # success, failure, skipped
+    finished = Signal(int, int, int, int)  # success, failure, skipped, organizational
 
     def __init__(
         self,
@@ -96,6 +119,11 @@ class ExportWorker(QObject):
         self._options = options
         self._cancelled = False
         self._stats = ExportStats()
+        # (page_id, filename) -> local path, so an image/file referenced
+        # twice on the same page (or re-encountered via the in-memory cache)
+        # is only downloaded once per run.
+        self._downloaded_images: dict[tuple[str, str], Path] = {}
+        self._downloaded_files: dict[tuple[str, str], Path] = {}
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -111,9 +139,56 @@ class ExportWorker(QObject):
         stem = f"{sanitize_filename(page.title)}_{page.id}"
         return self._options.output_dir / self._relative_dir(page) / f"{stem}{suffix}"
 
+    def _image_destination(self, page: PageRef, filename: str) -> Path:
+        """Where a downloaded embedded image lands in the shared images folder.
+
+        Prefixed with the page ID so two pages that both have a file named
+        e.g. ``diagram.png`` don't collide in the shared folder.
+        """
+        safe_name = sanitize_filename(filename)
+        return (
+            self._options.output_dir / IMAGES_DIRNAME / f"{page.id}_{safe_name}"
+        )
+
+    def _file_destination(self, page: PageRef, filename: str) -> Path:
+        """Where a downloaded linked file lands in the shared files folder.
+
+        Kept separate from :meth:`_image_destination` — a linked PDF or
+        ``.docx`` isn't an image, so it doesn't belong in ``images/``.
+        """
+        safe_name = sanitize_filename(filename)
+        return (
+            self._options.output_dir / FILES_DIRNAME / f"{page.id}_{safe_name}"
+        )
+
     def _page_url(self, page_id: str) -> str:
         base = self._credentials.base_url.rstrip("/")
         return f"{base}/pages/viewpage.action?pageId={page_id}"
+
+    # --- organizational (blank parent) pages -----------------------------
+
+    def _has_children_in_export(self, page: PageRef) -> bool:
+        """Whether some other page in this run has ``page`` as an ancestor.
+
+        Confluence titles are unique per space, so appearing anywhere in
+        another page's ancestor chain is a reliable enough signal that this
+        page exists only to hold that page (and possibly siblings) — not a
+        perfect guarantee against a rare cross-space title collision, but
+        good enough to distinguish "empty on purpose" from "actually broken".
+        """
+        return any(page.title in other.ancestor_titles for other in self._pages)
+
+    def _is_organizational_page(self, page: PageRef, exc: Exception) -> bool:
+        """A blank page with subpages under it isn't a failure — it's a
+        Confluence pattern for grouping pages in the tree, same as a folder
+        with no files of its own. Its title already appears in its
+        subpages' paths (mirrored layout) or ancestor chain regardless, so
+        there's nothing lost by not writing a file for it."""
+        return (
+            isinstance(exc, ConfluenceError)
+            and "no storage-format body" in str(exc)
+            and self._has_children_in_export(page)
+        )
 
     # --- link + attachment resolution -----------------------------------
 
@@ -131,8 +206,12 @@ class ExportWorker(QObject):
     def _link_resolver_for(self, page: PageRef, link_index: dict[str, Path]):
         """Return a resolver that points at a local file when we have one.
 
-        Falls back to the live Confluence URL, so a link out of the exported
-        subtree still goes somewhere useful instead of becoming plain text.
+        Falls back to the live Confluence URL for a link out of the exported
+        scope, so it still goes somewhere useful — unless ``link_out_of_scope``
+        is off, in which case it degrades to plain text instead. A link to a
+        different space needs a logged-in browser session to open, which
+        makes it a dead end in an export shared with someone who doesn't have
+        one, or opened offline.
         """
         source_dir = (self._destination(page, ".md")).parent
 
@@ -144,28 +223,133 @@ class ExportWorker(QObject):
                 if target is not None:
                     rel = os.path.relpath(target, source_dir)
                     return quote(rel.replace(os.sep, "/"))
+            if not self._options.link_out_of_scope:
+                return ""
             base = self._credentials.base_url.rstrip("/")
             space_key = space or self._space_key
             return f"{base}/display/{quote(space_key)}/{quote(title)}"
 
         return resolve
 
-    def _attachment_resolver_for(self, page: PageRef):
-        """Attachments aren't downloaded — link them on the server instead.
-
-        ``/download/attachments/<pageId>/<file>`` is the canonical Server/DC
-        path and resolves for anyone with a logged-in browser session, which
-        is a far better outcome than a dead relative link to a file that was
-        never fetched.
-        """
+    def _remote_attachment_url(self, page: PageRef, filename: str) -> str:
         base = self._credentials.base_url.rstrip("/")
+        return f"{base}/download/attachments/{page.id}/{quote(filename)}"
+
+    def _download_resolver(
+        self,
+        page: PageRef,
+        client: ConfluenceClient | None,
+        cache: dict[tuple[str, str], Path],
+        destination_for: Callable[[PageRef, str], Path],
+        on_success: Callable[[], None],
+        on_failure: Callable[[], None],
+    ):
+        """Shared body for the image and linked-file download resolvers.
+
+        Downloads through ``client``, caches by ``(page id, filename)`` so a
+        repeat reference within the same run costs nothing, and falls back to
+        the live Confluence URL if the fetch fails — a broken relative link
+        to a file that was never saved would be worse.
+        """
+        source_dir = self._destination(page, ".md").parent
 
         def resolve(filename: str) -> str:
             if not filename:
                 return ""
-            return f"{base}/download/attachments/{page.id}/{quote(filename)}"
+            cache_key = (page.id, filename)
+            destination = cache.get(cache_key)
+            if destination is None:
+                destination = destination_for(page, filename)
+                if not destination.exists() or self._options.overwrite:
+                    try:
+                        data = client.download_attachment(page.id, filename)
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        destination.write_bytes(data)
+                        on_success()
+                    except (ConfluenceError, OSError) as exc:
+                        on_failure()
+                        self.log.emit(
+                            f"  ! Could not download '{filename}' for "
+                            f"{page.title}: {exc}"
+                        )
+                        return self._remote_attachment_url(page, filename)
+                cache[cache_key] = destination
+            rel = os.path.relpath(destination, source_dir)
+            return quote(rel.replace(os.sep, "/"))
 
         return resolve
+
+    def _attachment_resolver_for(
+        self, page: PageRef, client: ConfluenceClient | None = None
+    ):
+        """Resolve an embedded ``ac:image`` to a Markdown image target.
+
+        Default behaviour links back at the server —
+        ``/download/attachments/<pageId>/<file>`` is the canonical Server/DC
+        path and resolves for anyone with a logged-in browser session, which
+        is a far better outcome than a dead relative link to a file that was
+        never fetched. When ``download_images`` is on, the file is instead
+        pulled down into a shared ``images/`` folder and linked relatively,
+        falling back to the server link if the download fails.
+        """
+        if not self._options.download_images:
+
+            def resolve_remote(filename: str) -> str:
+                if not filename:
+                    return ""
+                return self._remote_attachment_url(page, filename)
+
+            return resolve_remote
+
+        def record_success() -> None:
+            self._stats.images_downloaded += 1
+
+        def record_failure() -> None:
+            self._stats.images_failed += 1
+
+        return self._download_resolver(
+            page,
+            client,
+            self._downloaded_images,
+            self._image_destination,
+            record_success,
+            record_failure,
+        )
+
+    def _attachment_link_resolver_for(
+        self, page: PageRef, client: ConfluenceClient | None = None
+    ):
+        """Resolve a link to a file attachment (``ac:link`` + ``ri:attachment``).
+
+        Off by default, same as images — the link stays pointed at the
+        server. When ``download_linked_files`` is on, the file is pulled down
+        into a shared ``files/`` folder (kept separate from ``images/``,
+        since a linked PDF or ``.docx`` isn't an image) and linked relatively,
+        falling back to the server link if the download fails.
+        """
+        if not self._options.download_linked_files:
+
+            def resolve_remote(filename: str) -> str:
+                if not filename:
+                    return ""
+                return self._remote_attachment_url(page, filename)
+
+            return resolve_remote
+
+        def record_success() -> None:
+            self._stats.files_downloaded += 1
+
+        def record_failure() -> None:
+            self._stats.files_failed += 1
+
+        return self._download_resolver(
+            page,
+            client,
+            self._downloaded_files,
+            self._file_destination,
+            record_success,
+            record_failure,
+        )
 
     # --- state ----------------------------------------------------------
 
@@ -236,6 +420,19 @@ class ExportWorker(QObject):
                 if page.last_updated:
                     page_state[page.id] = page.last_updated
             except Exception as exc:  # noqa: BLE001 — every error reaches the user
+                if self._is_organizational_page(page, exc):
+                    self._stats.organizational += 1
+                    if opts.mirror_tree:
+                        self.log.emit(
+                            "  = No content of its own — its title became a "
+                            f"folder for its subpages: {page.title}"
+                        )
+                    else:
+                        self.log.emit(
+                            "  = No content of its own (a Confluence "
+                            f"organizational page): {page.title}"
+                        )
+                    continue
                 self._stats.failed += 1
                 msg = (
                     str(exc)
@@ -262,7 +459,10 @@ class ExportWorker(QObject):
         self._report_conversion_notes()
         self.progress.emit(total, total, "")
         self.finished.emit(
-            self._stats.succeeded, self._stats.failed, self._stats.skipped
+            self._stats.succeeded,
+            self._stats.failed,
+            self._stats.skipped,
+            self._stats.organizational,
         )
 
     # --- per-page export -------------------------------------------------
@@ -289,7 +489,8 @@ class ExportWorker(QObject):
         result = convert_storage(
             storage,
             link_resolver=self._link_resolver_for(page, link_index),
-            attachment_resolver=self._attachment_resolver_for(page),
+            attachment_resolver=self._attachment_resolver_for(page, client),
+            attachment_link_resolver=self._attachment_link_resolver_for(page, client),
         )
         self._stats.unknown_macros.update(result.unknown_macros)
         self._stats.attachments += len(result.attachments)
@@ -362,7 +563,41 @@ class ExportWorker(QObject):
     def _report_conversion_notes(self) -> None:
         """Say what the conversion had to approximate. Silence would imply
         the Markdown is a lossless rendering of the source, which it isn't."""
-        if self._stats.attachments:
+        if self._stats.organizational:
+            self.log.emit(
+                f"Note: {self._stats.organizational} page(s) had no content "
+                "of their own — they exist only to group subpages and were "
+                "skipped rather than counted as failures."
+            )
+        if self._options.download_images:
+            if self._stats.images_downloaded:
+                self.log.emit(
+                    f"Downloaded {self._stats.images_downloaded} embedded "
+                    f"image(s) into {IMAGES_DIRNAME}/ and linked them locally."
+                )
+            if self._stats.images_failed:
+                self.log.emit(
+                    f"Note: {self._stats.images_failed} embedded image(s) "
+                    "could not be downloaded and were linked to Confluence "
+                    "URLs instead."
+                )
+        if self._options.download_linked_files:
+            if self._stats.files_downloaded:
+                self.log.emit(
+                    f"Downloaded {self._stats.files_downloaded} linked "
+                    f"file(s) into {FILES_DIRNAME}/ and linked them locally."
+                )
+            if self._stats.files_failed:
+                self.log.emit(
+                    f"Note: {self._stats.files_failed} linked file(s) could "
+                    "not be downloaded and were linked to Confluence URLs "
+                    "instead."
+                )
+        if (
+            not self._options.download_images
+            and not self._options.download_linked_files
+            and self._stats.attachments
+        ):
             self.log.emit(
                 f"Note: {self._stats.attachments} attachment reference(s) point "
                 "at Confluence URLs — no files were downloaded."

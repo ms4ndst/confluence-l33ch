@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "confluence-l33ch"
-description = "Catppuccin-themed Windows GUI for exporting Confluence spaces and page trees to Markdown or PDF."
+description = "Catppuccin-themed GUI (Windows and Linux) for exporting Confluence spaces and page trees to Markdown or PDF."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -16,6 +16,7 @@ classifiers = [
     "Environment :: X11 Applications :: Qt",
     "Intended Audience :: End Users/Desktop",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",

@@ -80,7 +80,14 @@ LinkResolver = Callable[[str, str], str]
 """``(page_title, space_key) -> link target``. Return "" to emit plain text."""
 
 AttachmentResolver = Callable[[str], str]
-"""``(filename) -> image src``. Return "" to emit the filename as plain text."""
+"""``(filename) -> src/href``. Return "" to emit the filename as plain text.
+
+Used for both an embedded ``ac:image`` (via ``attachment_resolver``) and a
+link to a file attachment, ``ac:link`` wrapping ``ri:attachment`` (via
+``attachment_link_resolver``, falling back to ``attachment_resolver`` when
+not given) — the two are kept as separate callbacks so a caller can store
+images and linked files in different places.
+"""
 
 
 class StorageConverter(HTMLParser):
@@ -98,6 +105,7 @@ class StorageConverter(HTMLParser):
         self,
         link_resolver: LinkResolver | None = None,
         attachment_resolver: AttachmentResolver | None = None,
+        attachment_link_resolver: AttachmentResolver | None = None,
     ) -> None:
         # convert_charrefs=False so `handle_entityref` fires and we can decide
         # what to unescape ourselves — inside a code block, `&lt;` must stay
@@ -105,6 +113,12 @@ class StorageConverter(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._link_resolver = link_resolver
         self._attachment_resolver = attachment_resolver
+        # A ``ri:attachment`` used as an ``ac:link`` target (a link to a file)
+        # is conceptually different from one embedded via ``ac:image``, and
+        # the caller may want to store it somewhere else — falls back to
+        # ``attachment_resolver`` so a caller that doesn't care still gets one
+        # consistent resolver for both.
+        self._attachment_link_resolver = attachment_link_resolver or attachment_resolver
 
         self._sinks: list[list[str]] = [[]]
         self._list_stack: list[list] = []      # [kind, counter] per nesting level
@@ -292,7 +306,7 @@ class StorageConverter(HTMLParser):
             if self._macros and self._macros[-1].name == "__image__":
                 self._macros[-1].params["filename"] = filename
             elif self._link_href:
-                self._link_href[-1] = self._resolve_attachment(filename)
+                self._link_href[-1] = self._resolve_attachment_link(filename)
                 self._link_title = filename
             return
 
@@ -599,6 +613,11 @@ class StorageConverter(HTMLParser):
             return ""
         return self._attachment_resolver(filename)
 
+    def _resolve_attachment_link(self, filename: str) -> str:
+        if self._attachment_link_resolver is None:
+            return ""
+        return self._attachment_link_resolver(filename)
+
 
 @dataclass
 class _Macro:
@@ -693,12 +712,13 @@ def convert_storage(
     storage_xhtml: str,
     link_resolver: LinkResolver | None = None,
     attachment_resolver: AttachmentResolver | None = None,
+    attachment_link_resolver: AttachmentResolver | None = None,
 ) -> ConversionResult:
     """Convert one page's storage-format body to Markdown.
 
     Never raises on malformed markup: :class:`html.parser.HTMLParser` is
     lenient, and unbalanced sinks are flushed in :meth:`StorageConverter.result`.
     """
-    converter = StorageConverter(link_resolver, attachment_resolver)
+    converter = StorageConverter(link_resolver, attachment_resolver, attachment_link_resolver)
     converter.feed(storage_xhtml or "")
     return converter.result()
