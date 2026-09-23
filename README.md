@@ -309,6 +309,7 @@ the first export). The directory is also where
 | **Link to pages outside the export** | on | A link to a page not in this export (a different space, or one you didn't select) points at its live Confluence URL, which needs a logged-in browser session to open. Off renders it as plain text instead — useful for an export you'll share with someone without access, or read offline. |
 | **Include page ID in filenames** | on | Names each file `Title_12345.md` instead of just `Title.md`. The ID guarantees a unique, rename-stable filename; off is plainer but relies on titles being unique — two pages that would otherwise land on the same filename (same title, same folder) get a ` (2)`, ` (3)`, … suffix instead of overwriting each other. |
 | **Create files for blank pages** | off | Writes a placeholder `.md` — the title, an "empty in Confluence" note and the source link (plus front matter if that's on) — for pages that have no content, instead of skipping them. Covers both blank leaf pages and blank pages that only group subpages, so every page appears in the export and its links and `README.md` entry resolve. The pages are still counted as blank/organizational in the summary, not as failures. |
+| **Zero-pad numbered names** | off | Pads leading numbers in file and folder names so they sort in numeric order on GitHub and in file browsers, which sort names as text: `4. Context` becomes `04. Context` when a sibling is `10. Improvement`. Padding is per folder, to the widest leading number among that folder's names, so a folder numbered 1–9 is left alone. Only names on disk change — page titles, the `README.md` index labels and front matter keep the original title; links follow the padded names. |
 | **Generate README.md** | on | A `README.md` at the output root listing every page, indented by depth. |
 | **Download images to a central folder** | off | Fetches *embedded* images into a shared `images/` folder under the output directory and rewrites each `.md` to a relative link, instead of pointing at the live Confluence URL. See [Downloaded images and files](#downloaded-images-and-files). |
 | **Download linked files to a central folder** | off | Fetches files a page *links to* (a linked PDF, `.docx`, etc. — not an embedded image) into a shared `files/` folder, independently of the images option. See [Downloaded images and files](#downloaded-images-and-files). |
@@ -424,6 +425,22 @@ Sanitising replaces the Windows-invalid
 characters and control chars with `_`, collapses repeats, trims leading and
 trailing dots and spaces, and caps the name at 180 characters so directory +
 name stays under `MAX_PATH`.
+
+With **Zero-pad numbered names** on, a name starting with a number is padded
+with zeros to the widest leading number in the same folder, e.g.:
+
+```text
+04. Context of the organization/
+05. Leadership/
+…
+10. Improvement/
+```
+
+The width is worked out per folder from every name in it (files and
+subfolders). Date-style names — a four-digit year followed by `-`, `.` or `_`
+and a month, such as `2023-04-04 Meeting notes` or `2014.12.10 Upgrade` —
+don't count towards the width and are left as they are, so a numbered sibling
+like `7. Notes` still becomes `07. Notes`, not `0007. Notes`.
 
 With **Include page ID in filenames** off, the ID is dropped and the file is
 just `<sanitised title>.<ext>`. Two pages that would otherwise collide (same
@@ -737,12 +754,12 @@ py -m pip install pytest
 py -m pytest tests -q
 ```
 
-152 tests cover the storage converter (every construct, plus malformed markup),
+157 tests cover the storage converter (every construct, plus malformed markup),
 the client's header building and ancestry→depth maths, cURL/header paste
 parsing and the probe URL, scope resolution and its error paths, the export
 worker's filename/link/front-matter logic (including the central image/file
 download paths), a full export run against a stubbed REST client (formats,
-incremental skip, mirrored layout, blank-page handling and placeholders,
+incremental skip, mirrored layout, blank-page handling and placeholders, number padding,
 cancellation), and
 settings persistence, and worker-thread ownership. The thread tests abort the run rather than fail an
 assertion if they regress — that is the nature of the bug they guard.

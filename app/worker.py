@@ -64,6 +64,12 @@ def sanitize_filename(name: str, max_length: int = 180) -> str:
     return name[:max_length]
 
 
+_LEADING_NUMBER = re.compile(r"\d+")
+# "2023-04-04 Meeting notes", "2014.12.10 …", "2014_12 …" (a "/" is already
+# sanitised to "_"): a date, not a position in a numbered sequence.
+_LEADING_DATE = re.compile(r"\d{4}[-._]\d{1,2}(?!\d)")
+
+
 @dataclass
 class ExportOptions:
     output_dir: Path
@@ -75,6 +81,7 @@ class ExportOptions:
     link_out_of_scope: bool = True   # link pages outside the export to their live URL
     include_page_id: bool = True     # append "_<page id>" to each filename
     write_blank_pages: bool = False  # write a placeholder .md for empty pages
+    pad_numbers: bool = False        # "4. X" -> "04. X" beside "10. Y" so names sort
     write_index: bool = True         # emit README.md linking every page
     skip_unchanged: bool = False     # consult .l33ch-state.json and skip
     download_images: bool = False    # fetch attachments into a shared images/ folder
@@ -155,6 +162,8 @@ class ExportWorker(QObject):
             for page in pages
             for n in range(1, len(page.ancestor_titles) + 1)
         }
+        # Sibling group -> widest leading number in it, for `pad_numbers`.
+        self._pad_widths = self._compute_pad_widths()
         # Only meaningful when `include_page_id` is off: page id -> filename
         # stem. Computed once up front so a same-titled sibling gets a
         # stable "(2)", "(3)", … suffix instead of two pages silently
@@ -166,10 +175,59 @@ class ExportWorker(QObject):
 
     # --- paths ----------------------------------------------------------
 
+    def _sibling_group(self, parents: tuple[str, ...]) -> tuple[str, ...]:
+        """The folder a name lands in: its ancestor chain when mirroring,
+        otherwise the output root for everything."""
+        return parents if self._options.mirror_tree else ()
+
+    def _compute_pad_widths(self) -> dict[tuple[str, ...], int]:
+        """Widest leading number among the names sharing each folder.
+
+        File browsers and GitHub sort names as text, so "10. Improvement"
+        lands above "4. Context". Padding every numbered sibling to the same
+        width ("04.", "10.") makes text order match numeric order. Widths
+        are per folder, so a folder whose numbering stops at 9 is untouched.
+        Folder names count too — an ancestor is a name in *its* parent's
+        folder. Date-style names ("2023-04-04 Meeting notes") don't count,
+        or a dated page would widen its numbered siblings to four digits.
+        """
+        widths: dict[tuple[str, ...], int] = {}
+        if not self._options.pad_numbers:
+            return widths
+        names: set[tuple[tuple[str, ...], str]] = set()
+        for page in self._pages:
+            chain = page.ancestor_titles
+            names.add((self._sibling_group(chain), page.title))
+            if self._options.mirror_tree:
+                for n in range(len(chain)):
+                    names.add((chain[:n], chain[n]))
+        for group, title in names:
+            name = sanitize_filename(title)
+            if _LEADING_DATE.match(name):
+                continue
+            match = _LEADING_NUMBER.match(name)
+            if match:
+                widths[group] = max(widths.get(group, 0), len(match.group()))
+        return widths
+
+    def _name(self, parents: tuple[str, ...], title: str) -> str:
+        """Filesystem name for ``title`` inside the folder of ``parents``."""
+        name = sanitize_filename(title)
+        width = self._pad_widths.get(self._sibling_group(parents))
+        if width:
+            match = _LEADING_NUMBER.match(name)
+            if match:
+                name = match.group().zfill(width) + name[match.end():]
+        return name
+
     def _relative_dir(self, page: PageRef) -> Path:
         if not self._options.mirror_tree:
             return Path()
-        return Path(*[sanitize_filename(t) for t in page.ancestor_titles])
+        chain = page.ancestor_titles
+        return Path(*[self._name(chain[:n], t) for n, t in enumerate(chain)])
+
+    def _page_name(self, page: PageRef) -> str:
+        return self._name(page.ancestor_titles, page.title)
 
     def _is_folder_page(self, page: PageRef) -> bool:
         """Whether the mirrored layout turns this page into a folder."""
@@ -196,7 +254,7 @@ class ExportWorker(QObject):
         counts: dict[tuple[Path, str], int] = {}
         stems: dict[str, str] = {}
         for page in self._pages:
-            title = sanitize_filename(page.title)
+            title = self._page_name(page)
             folder = self._relative_dir(page)
             if self._is_folder_page(page):
                 # Claims ``<folder>/<folder>.md`` so a same-titled subpage
@@ -213,7 +271,7 @@ class ExportWorker(QObject):
             # A page with subpages lives inside the folder it became, so the
             # folder is self-contained: ``Docs/Docs.md`` beside its children
             # rather than ``Docs_123.md`` one level up.
-            folder = sanitize_filename(page.title)
+            folder = self._page_name(page)
             return (
                 self._options.output_dir
                 / self._relative_dir(page)
@@ -221,7 +279,7 @@ class ExportWorker(QObject):
                 / f"{folder}{suffix}"
             )
         if self._options.include_page_id:
-            stem = f"{sanitize_filename(page.title)}_{page.id}"
+            stem = f"{self._page_name(page)}_{page.id}"
         else:
             stem = self._stems[page.id]
         return self._options.output_dir / self._relative_dir(page) / f"{stem}{suffix}"

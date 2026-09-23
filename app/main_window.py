@@ -777,6 +777,14 @@ class MainWindow(QMainWindow):
             "of skipping them. Keeps every page visible in the export and\n"
             "its links and index entries working."
         )
+        self.pad_numbers_check = QCheckBox("Zero-pad numbered names")
+        self.pad_numbers_check.setToolTip(
+            "Pad leading numbers in file and folder names so they sort in\n"
+            "order on GitHub and in file browsers: '4. Context' becomes\n"
+            "'04. Context' when a sibling is '10. Improvement'. Padding is\n"
+            "per folder, to the widest number there. Page titles inside the\n"
+            "files are unchanged."
+        )
         self.include_page_id_check = QCheckBox("Include page ID in filenames")
         self.include_page_id_check.setChecked(True)
         self.include_page_id_check.setToolTip(
@@ -797,6 +805,7 @@ class MainWindow(QMainWindow):
         second.addWidget(self.link_out_of_scope_check, 3, 0)
         second.addWidget(self.include_page_id_check, 3, 1)
         second.addWidget(self.write_blank_check, 4, 0)
+        second.addWidget(self.pad_numbers_check, 4, 1)
         second.setColumnStretch(2, 1)
         outer.addLayout(second)
 
@@ -887,7 +896,7 @@ class MainWindow(QMainWindow):
                    self.mirror_check, self.front_matter_check,
                    self.resolve_links_check, self.link_out_of_scope_check,
                    self.index_check, self.include_page_id_check,
-                   self.write_blank_check,
+                   self.write_blank_check, self.pad_numbers_check,
                    self.download_images_check, self.download_linked_files_check,
                    self.repeat_check):
             cb.toggled.connect(self._schedule_save)
@@ -924,6 +933,7 @@ class MainWindow(QMainWindow):
             "link_out_of_scope": self.link_out_of_scope_check.isChecked(),
             "include_page_id": self.include_page_id_check.isChecked(),
             "write_blank_pages": self.write_blank_check.isChecked(),
+            "pad_numbers": self.pad_numbers_check.isChecked(),
             "write_index": self.index_check.isChecked(),
             "download_images": self.download_images_check.isChecked(),
             "download_linked_files": self.download_linked_files_check.isChecked(),
@@ -985,6 +995,7 @@ class MainWindow(QMainWindow):
             ("link_out_of_scope", self.link_out_of_scope_check),
             ("include_page_id", self.include_page_id_check),
             ("write_blank_pages", self.write_blank_check),
+            ("pad_numbers", self.pad_numbers_check),
             ("write_index", self.index_check),
             ("download_images", self.download_images_check),
             ("download_linked_files", self.download_linked_files_check),
@@ -1365,6 +1376,7 @@ class MainWindow(QMainWindow):
             link_out_of_scope=self.link_out_of_scope_check.isChecked(),
             include_page_id=self.include_page_id_check.isChecked(),
             write_blank_pages=self.write_blank_check.isChecked(),
+            pad_numbers=self.pad_numbers_check.isChecked(),
             write_index=self.index_check.isChecked(),
             skip_unchanged=self.skip_unchanged_check.isChecked(),
             download_images=self.download_images_check.isChecked(),

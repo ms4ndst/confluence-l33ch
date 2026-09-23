@@ -80,6 +80,66 @@ def test_parent_page_stays_flat_without_mirror_layout(tmp_path):
     assert worker._destination(parent, ".md") == tmp_path / "Parent_8.md"
 
 
+def test_leading_numbers_are_padded_to_sort_within_a_folder(tmp_path):
+    pages = [
+        PageRef(id="4", title="4. Context"),
+        PageRef(id="10", title="10. Improvement"),
+        PageRef(id="99", title="Appendix"),
+    ]
+    worker = _worker(tmp_path, pages, pad_numbers=True, include_page_id=False)
+    assert worker._destination(pages[0], ".md") == tmp_path / "04. Context.md"
+    assert worker._destination(pages[1], ".md") == tmp_path / "10. Improvement.md"
+    assert worker._destination(pages[2], ".md") == tmp_path / "Appendix.md"
+
+
+def test_date_style_names_do_not_widen_number_padding(tmp_path):
+    pages = [
+        PageRef(id="1", title="7. Notes"),
+        PageRef(id="2", title="12. Summary"),
+        PageRef(id="3", title="2023-04-04 Meeting notes"),
+        PageRef(id="4", title="2014.12.10 Upgrade meeting"),
+    ]
+    worker = _worker(tmp_path, pages, pad_numbers=True, include_page_id=False)
+    assert worker._destination(pages[0], ".md") == tmp_path / "07. Notes.md"
+    assert worker._destination(pages[2], ".md") == (
+        tmp_path / "2023-04-04 Meeting notes.md"
+    )
+    assert worker._destination(pages[3], ".md") == (
+        tmp_path / "2014.12.10 Upgrade meeting.md"
+    )
+
+
+def test_number_padding_is_off_by_default(tmp_path):
+    pages = [PageRef(id="4", title="4. Context"), PageRef(id="10", title="10. X")]
+    worker = _worker(tmp_path, pages, include_page_id=False)
+    assert worker._destination(pages[0], ".md") == tmp_path / "4. Context.md"
+
+
+def test_number_padding_applies_to_mirrored_folders_per_level(tmp_path):
+    # "4. Context" and "10. Improvement" are siblings at the top level; the
+    # subpages inside "4. Context" only go up to 9, so they stay unpadded.
+    ctx = PageRef(id="4", title="4. Context")
+    imp = PageRef(id="10", title="10. Improvement")
+    sub = PageRef(id="41", title="1. Scope", ancestor_titles=("4. Context",))
+    worker = _worker(
+        tmp_path, [ctx, imp, sub], mirror_tree=True, pad_numbers=True
+    )
+    assert worker._destination(ctx, ".md") == (
+        tmp_path / "04. Context" / "04. Context.md"
+    )
+    assert worker._destination(sub, ".md") == (
+        tmp_path / "04. Context" / "1. Scope_41.md"
+    )
+
+
+def test_padded_names_are_used_for_links(tmp_path):
+    a = PageRef(id="1", title="1. Alpha")
+    b = PageRef(id="2", title="10. Beta")
+    worker = _worker(tmp_path, [a, b], pad_numbers=True, include_page_id=False)
+    resolve = worker._link_resolver_for(a, worker._build_link_index())
+    assert resolve("1. Alpha", "DOCS") == "01.%20Alpha.md"
+
+
 def test_page_id_can_be_omitted_from_filenames(tmp_path):
     page = PageRef(id="123", title="My Page")
     worker = _worker(tmp_path, [page], include_page_id=False)
