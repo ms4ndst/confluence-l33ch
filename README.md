@@ -18,7 +18,7 @@ What it does:
    records each page's last-modified stamp, so a repeat run downloads only
    what actually changed.
 4. **Navigable offline.** Links between exported pages are rewritten to point
-   at the sibling `.md` files, an `index.md` maps the tree, and optional YAML
+   at the sibling `.md` files, a `README.md` maps the tree, and optional YAML
    front matter keeps every file traceable to the page it came from.
 5. **Credentials stay out of the way.** PAT or session cookie, neither stored
    unless you ask; `CONFLUENCE_PAT` / `CONFLUENCE_COOKIE` work as env-var
@@ -293,7 +293,7 @@ re-downloading their bodies.
 **Browse…** picks it; **Open folder** reveals it in the system file manager
 (Explorer, or the Linux desktop's default) once it exists (it is created on
 the first export). The directory is also where
-`.l33ch-state.json`, `index.md` and `l33ch-log.txt` are written, and what
+`.l33ch-state.json`, `README.md` and `l33ch-log.txt` are written, and what
 **Convert MD to PDF** reads.
 
 ### 4. Export options
@@ -303,11 +303,12 @@ the first export). The directory is also where
 | **Format** | Markdown | `md` converts the page's storage format locally. `pdf` asks Confluence for its own render (higher fidelity, but many instances have the endpoint disabled). `both` writes one of each. |
 | **Overwrite existing files** | on | Off makes a re-run fail on pages already written, rather than replacing them. |
 | **Skip unchanged pages** | off | Compares each page's timestamp against `.l33ch-state.json` and skips matches. This is what makes a repeat run cheap. |
-| **Mirror page hierarchy as folders** | off | Recreates the parent/child structure as directories instead of writing every page side by side. Intra-export links are rewritten as relative paths either way. |
-| **Write YAML front matter** | on | Prepends title, page ID, space, source URL, version and last-modified stamp, so every file traces back to the page it came from. |
+| **Mirror page hierarchy as folders** | off | Recreates the parent/child structure as directories instead of writing every page side by side. A page with subpages is written inside its folder as `<folder>_page.md`. Intra-export links are rewritten as relative paths either way. |
+| **Write YAML front matter** | off | Prepends title, page ID, space, source URL, version and last-modified stamp, so every file traces back to the page it came from. |
 | **Rewrite wiki links to local files** | on | Links between exported pages point at the sibling `.md`. Links out of the export fall back to **Link to pages outside the export** below. |
 | **Link to pages outside the export** | on | A link to a page not in this export (a different space, or one you didn't select) points at its live Confluence URL, which needs a logged-in browser session to open. Off renders it as plain text instead — useful for an export you'll share with someone without access, or read offline. |
-| **Generate index.md** | on | An `index.md` at the output root listing every page, indented by depth. |
+| **Include page ID in filenames** | on | Names each file `Title_12345.md` instead of just `Title.md`. The ID guarantees a unique, rename-stable filename; off is plainer but relies on titles being unique — two pages that would otherwise land on the same filename (same title, same folder) get a ` (2)`, ` (3)`, … suffix instead of overwriting each other. |
+| **Generate README.md** | on | A `README.md` at the output root listing every page, indented by depth. |
 | **Download images to a central folder** | off | Fetches *embedded* images into a shared `images/` folder under the output directory and rewrites each `.md` to a relative link, instead of pointing at the live Confluence URL. See [Downloaded images and files](#downloaded-images-and-files). |
 | **Download linked files to a central folder** | off | Fetches files a page *links to* (a linked PDF, `.docx`, etc. — not an embedded image) into a shared `files/` folder, independently of the images option. See [Downloaded images and files](#downloaded-images-and-files). |
 | **Repeat every** | off, 60 min | Re-runs discovery + export on a timer (1–1440 minutes) so the export tracks the space unattended. Pair it with *Skip unchanged pages*. A scheduled run started while another is in flight is deferred rather than doubled up. |
@@ -335,7 +336,7 @@ Renders every `.md` under the output directory — recursively, so a mirrored
 layout is covered — to a sibling `.pdf` with `markdown` + `pdfkit` +
 wkhtmltopdf. Use it when the server's own PDF export is disabled.
 
-* `index.md` is skipped: it is generated navigation, not content.
+* `README.md` is skipped: it is generated navigation, not content.
 * **Overwrite existing files** is honoured here too, so an unticked box skips
   PDFs that already exist.
 * A print stylesheet is applied (neutral serif-free typography, ruled tables,
@@ -354,7 +355,7 @@ Flat (default):
 
 ```text
 <output>/
-  index.md
+  README.md
   .l33ch-state.json
   l33ch-log.txt
   Release Notes_123456.md
@@ -365,14 +366,19 @@ Mirrored (**Mirror page hierarchy** on):
 
 ```text
 <output>/
-  index.md
+  README.md
   l33ch-log.txt
-  Product Docs_100.md
   Product Docs/
-    Getting Started_101.md
+    Product Docs_page.md
     Getting Started/
+      Getting Started_page.md
       Install_102.md
 ```
+
+A page that has subpages becomes a folder, and its own content is written
+inside that folder as `<folder>_page.md` (no page ID — the folder already
+makes the name unique), so each folder is self-contained. Pages without
+subpages keep the normal filename scheme below.
 
 `l33ch-log.txt` always sits at the output root (never inside a mirrored
 subfolder) — see [`l33ch-log.txt`](#l33ch-logtxt) below.
@@ -384,6 +390,11 @@ Sanitising replaces the Windows-invalid
 characters and control chars with `_`, collapses repeats, trims leading and
 trailing dots and spaces, and caps the name at 180 characters so directory +
 name stays under `MAX_PATH`.
+
+With **Include page ID in filenames** off, the ID is dropped and the file is
+just `<sanitised title>.<ext>`. Two pages that would otherwise collide (same
+title, same folder) get a ` (2)`, ` (3)`, … suffix based on their order in
+the page list, rather than one silently overwriting the other.
 
 ### Downloaded images and files
 
@@ -401,7 +412,7 @@ regardless of **Mirror page hierarchy**:
 
 ```text
 <output>/
-  index.md
+  README.md
   images/
     123457_diagram.png
     123457_screenshot.png
@@ -427,7 +438,7 @@ locally.
 
 ### Front matter
 
-With **Write YAML front matter** on (the default), each `.md` starts with:
+With **Write YAML front matter** ticked (off by default), each `.md` starts with:
 
 ```yaml
 ---
@@ -445,7 +456,7 @@ exported_by: confluence-l33ch 0.1.0
 instance regardless of space or title changes. Double quotes in a title are
 downgraded to single quotes so the YAML scalar stays valid.
 
-### `index.md`
+### `README.md`
 
 ```markdown
 # DOCS export
@@ -536,7 +547,7 @@ Things it deliberately does **not** do, and says so in the log:
   fetch them instead — see [Downloaded images and
   files](#downloaded-images-and-files).
 * **Navigation macros are dropped** — `toc`, `children`, `pagetree`,
-  `livesearch` and friends. The exported tree and `index.md` are the
+  `livesearch` and friends. The exported tree and `README.md` are the
   navigation.
 * **Unrecognised macros pass their body through** rather than being deleted,
   and their names are listed at the end of the run so you know the output is
@@ -666,7 +677,7 @@ py -m pip install pytest
 py -m pytest tests -q
 ```
 
-142 tests cover the storage converter (every construct, plus malformed markup),
+147 tests cover the storage converter (every construct, plus malformed markup),
 the client's header building and ancestry→depth maths, cURL/header paste
 parsing and the probe URL, scope resolution and its error paths, the export
 worker's filename/link/front-matter logic (including the central image/file
@@ -697,7 +708,7 @@ Live HTTP is not exercised; **Test connection** is the manual equivalent.
 | App won't start on Linux: missing `xcb`/`libGL` etc. | Install the Qt platform-plugin system libraries — see *Install* above (`libxcb-cursor0 libxkbcommon-x11-0 libgl1` on Debian/Ubuntu). |
 | *"Could not resolve the top page"* | On Server/DC page IDs are **numeric** — take the `pageId=` value from the page's URL. A short-link or Cloud-style ID will not resolve. Or clear the ID and use **Top page title**, which must match exactly, including case. |
 | `Missing dependency: pdfkit` / `markdown` | Install the optional extra: `py -m pip install ".[pdf]"`. |
-| Export writes files but `index.md` is absent | Expected for a PDF-only run, or with **Generate index.md** unticked. |
+| Export writes files but `README.md` is absent | Expected for a PDF-only run, or with **Generate README.md** unticked. |
 | A repeat schedule stops producing anything | Almost always an expired cookie. Check the log for 401s and re-import, or switch to a PAT. |
 | "N image(s)/file(s) could not be downloaded" | Check `l33ch-log.txt` in the output directory (or the **Save log…** button) for the specific `! Could not download …` line per attachment — it carries the real HTTP status. 401/403 usually means the download endpoint doesn't accept the same auth as the REST API; 404 means the attachment/page no longer matches; 429 means you were rate-limited on a large export. |
 

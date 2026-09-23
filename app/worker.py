@@ -28,7 +28,10 @@ from .storage_converter import convert_storage
 # hasn't moved. Dot-prefixed to stay out of the way of the exported content.
 STATE_FILENAME = ".l33ch-state.json"
 
-INDEX_FILENAME = "index.md"
+# A page named "README" with page IDs turned off in the filename would
+# collide with this — an accepted, pre-existing risk (the old "index.md"
+# name had the same exposure against a page literally titled "Index").
+INDEX_FILENAME = "README.md"
 
 # Mirrors everything that reaches the GUI's log panel during a run. The GUI
 # (not this module) opens/writes it — see MainWindow._open_run_log_file —
@@ -67,10 +70,11 @@ class ExportOptions:
     export_format: str = "md"        # "md" | "pdf" | "both"
     overwrite: bool = True
     mirror_tree: bool = False        # recreate the page hierarchy as folders
-    front_matter: bool = True        # YAML header with id / url / timestamp
+    front_matter: bool = False       # YAML header with id / url / timestamp
     resolve_links: bool = True       # rewrite intra-wiki links to local files
     link_out_of_scope: bool = True   # link pages outside the export to their live URL
-    write_index: bool = True         # emit index.md linking every page
+    include_page_id: bool = True     # append "_<page id>" to each filename
+    write_index: bool = True         # emit README.md linking every page
     skip_unchanged: bool = False     # consult .l33ch-state.json and skip
     download_images: bool = False    # fetch attachments into a shared images/ folder
     download_linked_files: bool = False  # fetch linked (non-image) files into files/
@@ -124,6 +128,20 @@ class ExportWorker(QObject):
         # is only downloaded once per run.
         self._downloaded_images: dict[tuple[str, str], Path] = {}
         self._downloaded_files: dict[tuple[str, str], Path] = {}
+        # Every ancestor-title prefix some page in this run sits under, i.e.
+        # every folder the mirrored layout creates. A page whose own
+        # (ancestors + title) is in here has subpages, so in the mirrored
+        # layout it's written *inside* its folder as ``<folder>_page.md``.
+        self._folder_chains: set[tuple[str, ...]] = {
+            page.ancestor_titles[:n]
+            for page in pages
+            for n in range(1, len(page.ancestor_titles) + 1)
+        }
+        # Only meaningful when `include_page_id` is off: page id -> filename
+        # stem. Computed once up front so a same-titled sibling gets a
+        # stable "(2)", "(3)", … suffix instead of two pages silently
+        # overwriting each other.
+        self._stems = self._compute_stems()
 
     def cancel(self) -> None:
         self._cancelled = True
@@ -135,8 +153,53 @@ class ExportWorker(QObject):
             return Path()
         return Path(*[sanitize_filename(t) for t in page.ancestor_titles])
 
+    def _is_folder_page(self, page: PageRef) -> bool:
+        """Whether the mirrored layout turns this page into a folder."""
+        return (
+            self._options.mirror_tree
+            and (*page.ancestor_titles, page.title) in self._folder_chains
+        )
+
+    def _compute_stems(self) -> dict[str, str]:
+        """Assign each page a filename stem with no page ID.
+
+        Two pages can share a title — either genuinely (a common heading
+        re-used across the space) or because they land in the same
+        directory once ``include_page_id`` is off and the ID that used to
+        disambiguate them is gone. Rather than let the second one silently
+        overwrite the first, every page after the first with the same
+        ``(folder, sanitized title)`` key gets a stable ``" (2)"``,
+        ``" (3)"``, … suffix. "Stable" here means: for the same input page
+        list, in the same order, the same page always gets the same
+        suffix — good enough for a re-run over an unchanged export, though
+        two same-titled pages could in principle swap suffixes if the
+        Confluence API ever returns them in a different relative order.
+        """
+        counts: dict[tuple[Path, str], int] = {}
+        stems: dict[str, str] = {}
+        for page in self._pages:
+            key = (self._relative_dir(page), sanitize_filename(page.title))
+            counts[key] = counts.get(key, 0) + 1
+            n = counts[key]
+            stems[page.id] = key[1] if n == 1 else f"{key[1]} ({n})"
+        return stems
+
     def _destination(self, page: PageRef, suffix: str) -> Path:
-        stem = f"{sanitize_filename(page.title)}_{page.id}"
+        if self._is_folder_page(page):
+            # A page with subpages lives inside the folder it became, so the
+            # folder is self-contained: ``Docs/Docs_page.md`` beside its
+            # children rather than ``Docs_123.md`` one level up.
+            folder = sanitize_filename(page.title)
+            return (
+                self._options.output_dir
+                / self._relative_dir(page)
+                / folder
+                / f"{folder}_page{suffix}"
+            )
+        if self._options.include_page_id:
+            stem = f"{sanitize_filename(page.title)}_{page.id}"
+        else:
+            stem = self._stems[page.id]
         return self._options.output_dir / self._relative_dir(page) / f"{stem}{suffix}"
 
     def _image_destination(self, page: PageRef, filename: str) -> Path:
@@ -534,10 +597,11 @@ class ExportWorker(QObject):
     # --- index ----------------------------------------------------------
 
     def _write_index(self) -> Path:
-        """Write an ``index.md`` mirroring the page hierarchy.
+        """Write a ``README.md`` mirroring the page hierarchy.
 
-        The exported tree has no other entry point, so this is its map — and
-        it is what an LLM reads first to find the page it needs.
+        The exported tree has no other entry point, so this is its map —
+        named README.md rather than index.md so it's the file a reader (or
+        an LLM) lands on first when just browsing the output folder.
         """
         out = self._options.output_dir
         lines = [

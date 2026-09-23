@@ -716,10 +716,12 @@ class MainWindow(QMainWindow):
         self.mirror_check = QCheckBox("Mirror page hierarchy as folders")
         self.mirror_check.setToolTip(
             "Recreate the parent/child structure as directories under the\n"
-            "output folder, instead of writing every page side by side."
+            "output folder, instead of writing every page side by side.\n"
+            "A page with subpages is saved inside its folder as\n"
+            "<folder>_page.md."
         )
         self.front_matter_check = QCheckBox("Write YAML front matter")
-        self.front_matter_check.setChecked(True)
+        self.front_matter_check.setChecked(False)
         self.front_matter_check.setToolTip(
             "Prepend title, page ID, space, source URL, version and\n"
             "last-modified timestamp to each .md file. Keeps the export\n"
@@ -741,10 +743,10 @@ class MainWindow(QMainWindow):
             "render such links as plain text instead of a dead-looking link,\n"
             "e.g. for an export you'll share with someone without access."
         )
-        self.index_check = QCheckBox("Generate index.md")
+        self.index_check = QCheckBox("Generate README.md")
         self.index_check.setChecked(True)
         self.index_check.setToolTip(
-            "Write an index.md at the output root listing every exported page,\n"
+            "Write a README.md at the output root listing every exported page,\n"
             "indented by its depth in the tree."
         )
         self.download_images_check = QCheckBox(
@@ -768,6 +770,16 @@ class MainWindow(QMainWindow):
             "Off by default: without this, linked files stay pointed at\n"
             "Confluence and only load for a reader with a logged-in session."
         )
+        self.include_page_id_check = QCheckBox("Include page ID in filenames")
+        self.include_page_id_check.setChecked(True)
+        self.include_page_id_check.setToolTip(
+            "Name each file 'Title_12345.md' instead of just 'Title.md'.\n"
+            "The ID guarantees a unique filename and keeps it stable across\n"
+            "page renames. Untick only if you don't need that and prefer\n"
+            "plain titles — two pages that would land on the same filename\n"
+            "(same title, same folder) get a ' (2)', ' (3)', … suffix\n"
+            "instead of overwriting each other."
+        )
 
         second.addWidget(self.mirror_check, 0, 0)
         second.addWidget(self.front_matter_check, 0, 1)
@@ -776,6 +788,7 @@ class MainWindow(QMainWindow):
         second.addWidget(self.download_images_check, 2, 0)
         second.addWidget(self.download_linked_files_check, 2, 1)
         second.addWidget(self.link_out_of_scope_check, 3, 0)
+        second.addWidget(self.include_page_id_check, 3, 1)
         second.setColumnStretch(2, 1)
         outer.addLayout(second)
 
@@ -865,7 +878,7 @@ class MainWindow(QMainWindow):
                    self.overwrite_check, self.skip_unchanged_check,
                    self.mirror_check, self.front_matter_check,
                    self.resolve_links_check, self.link_out_of_scope_check,
-                   self.index_check,
+                   self.index_check, self.include_page_id_check,
                    self.download_images_check, self.download_linked_files_check,
                    self.repeat_check):
             cb.toggled.connect(self._schedule_save)
@@ -900,6 +913,7 @@ class MainWindow(QMainWindow):
             "front_matter": self.front_matter_check.isChecked(),
             "resolve_links": self.resolve_links_check.isChecked(),
             "link_out_of_scope": self.link_out_of_scope_check.isChecked(),
+            "include_page_id": self.include_page_id_check.isChecked(),
             "write_index": self.index_check.isChecked(),
             "download_images": self.download_images_check.isChecked(),
             "download_linked_files": self.download_linked_files_check.isChecked(),
@@ -959,6 +973,7 @@ class MainWindow(QMainWindow):
             ("front_matter", self.front_matter_check),
             ("resolve_links", self.resolve_links_check),
             ("link_out_of_scope", self.link_out_of_scope_check),
+            ("include_page_id", self.include_page_id_check),
             ("write_index", self.index_check),
             ("download_images", self.download_images_check),
             ("download_linked_files", self.download_linked_files_check),
@@ -1337,6 +1352,7 @@ class MainWindow(QMainWindow):
             front_matter=self.front_matter_check.isChecked(),
             resolve_links=self.resolve_links_check.isChecked(),
             link_out_of_scope=self.link_out_of_scope_check.isChecked(),
+            include_page_id=self.include_page_id_check.isChecked(),
             write_index=self.index_check.isChecked(),
             skip_unchanged=self.skip_unchanged_check.isChecked(),
             download_images=self.download_images_check.isChecked(),

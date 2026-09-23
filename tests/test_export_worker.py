@@ -82,11 +82,17 @@ def test_markdown_files_are_written(tmp_path):
 
 
 def test_front_matter_and_body_are_both_present(tmp_path):
-    _run(tmp_path)
+    _run(tmp_path, front_matter=True)
     text = (tmp_path / "Alpha_1.md").read_text(encoding="utf-8")
     assert text.startswith("---\n")
     assert 'page_id: "1"' in text
     assert "# Alpha" in text
+
+
+def test_front_matter_is_off_by_default(tmp_path):
+    _run(tmp_path)
+    text = (tmp_path / "Alpha_1.md").read_text(encoding="utf-8")
+    assert text.startswith("# Alpha")
 
 
 def test_front_matter_can_be_disabled(tmp_path):
@@ -99,6 +105,15 @@ def test_internal_link_points_at_the_sibling_file(tmp_path):
     _run(tmp_path)
     text = (tmp_path / "Alpha_1.md").read_text(encoding="utf-8")
     assert "[Beta](Beta_2.md)" in text
+
+
+def test_filenames_can_omit_the_page_id(tmp_path):
+    result = _run(tmp_path, include_page_id=False)
+    assert result["success"] == 2
+    assert (tmp_path / "Alpha.md").is_file()
+    assert (tmp_path / "Beta.md").is_file()
+    text = (tmp_path / "Alpha.md").read_text(encoding="utf-8")
+    assert "[Beta](Beta.md)" in text
 
 
 def test_out_of_scope_link_degrades_to_plain_text_when_disabled(tmp_path):
@@ -122,14 +137,14 @@ def test_out_of_scope_link_degrades_to_plain_text_when_disabled(tmp_path):
 
 def test_index_is_written(tmp_path):
     _run(tmp_path)
-    index = (tmp_path / "index.md").read_text(encoding="utf-8")
+    index = (tmp_path / "README.md").read_text(encoding="utf-8")
     assert "- [Alpha](Alpha_1.md)" in index
     assert "  - [Beta](Beta_2.md)" in index
 
 
 def test_index_can_be_disabled(tmp_path):
     _run(tmp_path, write_index=False)
-    assert not (tmp_path / "index.md").exists()
+    assert not (tmp_path / "README.md").exists()
 
 
 def test_state_records_every_page_timestamp(tmp_path):
@@ -174,8 +189,8 @@ def test_pdf_format_writes_pdf_only(tmp_path):
     assert result["success"] == 2
     assert (tmp_path / "Alpha_1.pdf").read_bytes() == b"%PDF-1.4 stub"
     assert not (tmp_path / "Alpha_1.md").exists()
-    # index.md is a Markdown artefact; a PDF-only run has nothing to index.
-    assert not (tmp_path / "index.md").exists()
+    # README.md is a Markdown artefact; a PDF-only run has nothing to index.
+    assert not (tmp_path / "README.md").exists()
 
 
 def test_both_format_writes_md_and_pdf(tmp_path):
@@ -190,11 +205,13 @@ def test_mirrored_layout_creates_folders(tmp_path):
         PageRef(id="2", title="Beta", depth=1, ancestor_titles=("Alpha",)),
     ]
     _run(tmp_path, pages=pages, mirror_tree=True)
-    assert (tmp_path / "Alpha_1.md").is_file()
+    # A page with subpages is written inside the folder it became.
+    assert (tmp_path / "Alpha" / "Alpha_page.md").is_file()
+    assert not (tmp_path / "Alpha_1.md").exists()
     assert (tmp_path / "Alpha" / "Beta_2.md").is_file()
-    # The link from Alpha into the subfolder is relative and points down.
-    text = (tmp_path / "Alpha_1.md").read_text(encoding="utf-8")
-    assert "(Alpha/Beta_2.md)" in text
+    # The link from Alpha to its subpage is relative, side by side.
+    text = (tmp_path / "Alpha" / "Alpha_page.md").read_text(encoding="utf-8")
+    assert "(Beta_2.md)" in text
 
 
 def test_cancel_stops_before_the_next_page(tmp_path):

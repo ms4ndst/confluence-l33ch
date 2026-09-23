@@ -21,6 +21,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from .worker import INDEX_FILENAME
+
 
 # Covers every platform this app runs on so the lookup needs no branching:
 # a path that doesn't exist on the current OS is simply skipped by the
@@ -174,10 +176,10 @@ class MdToPdfWorker(QObject):
         config = pdfkit.configuration(wkhtmltopdf=exe)
 
         pattern = "**/*.md" if self._recursive else "*.md"
-        # index.md is generated navigation, not content worth printing.
+        # README.md is generated navigation, not content worth printing.
         files = sorted(
             p for p in self._directory.glob(pattern)
-            if p.is_file() and p.name != "index.md"
+            if p.is_file() and p.name != INDEX_FILENAME
         )
         if not files:
             self.log.emit(f"No .md files found in {self._directory}.")

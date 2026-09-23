@@ -51,6 +51,49 @@ def test_mirror_layout_uses_ancestor_folders(tmp_path):
     )
 
 
+def test_mirror_layout_puts_parent_page_inside_its_folder(tmp_path):
+    parent = PageRef(id="8", title="Middle", ancestor_titles=("Top",))
+    child = PageRef(id="9", title="Child", ancestor_titles=("Top", "Middle"))
+    worker = _worker(tmp_path, [parent, child], mirror_tree=True)
+    assert worker._destination(parent, ".md") == (
+        tmp_path / "Top" / "Middle" / "Middle_page.md"
+    )
+    assert worker._destination(child, ".md") == (
+        tmp_path / "Top" / "Middle" / "Child_9.md"
+    )
+
+
+def test_parent_page_stays_flat_without_mirror_layout(tmp_path):
+    parent = PageRef(id="8", title="Parent")
+    child = PageRef(id="9", title="Child", ancestor_titles=("Parent",))
+    worker = _worker(tmp_path, [parent, child], mirror_tree=False)
+    assert worker._destination(parent, ".md") == tmp_path / "Parent_8.md"
+
+
+def test_page_id_can_be_omitted_from_filenames(tmp_path):
+    page = PageRef(id="123", title="My Page")
+    worker = _worker(tmp_path, [page], include_page_id=False)
+    assert worker._destination(page, ".md") == tmp_path / "My Page.md"
+
+
+def test_omitting_page_id_disambiguates_same_titled_siblings(tmp_path):
+    a = PageRef(id="1", title="Duplicate")
+    b = PageRef(id="2", title="Duplicate")
+    c = PageRef(id="3", title="Duplicate")
+    worker = _worker(tmp_path, [a, b, c], include_page_id=False)
+    assert worker._destination(a, ".md") == tmp_path / "Duplicate.md"
+    assert worker._destination(b, ".md") == tmp_path / "Duplicate (2).md"
+    assert worker._destination(c, ".md") == tmp_path / "Duplicate (3).md"
+
+
+def test_omitting_page_id_only_disambiguates_within_the_same_folder(tmp_path):
+    a = PageRef(id="1", title="Duplicate", ancestor_titles=("Alpha",))
+    b = PageRef(id="2", title="Duplicate", ancestor_titles=("Beta",))
+    worker = _worker(tmp_path, [a, b], mirror_tree=True, include_page_id=False)
+    assert worker._destination(a, ".md") == tmp_path / "Alpha" / "Duplicate.md"
+    assert worker._destination(b, ".md") == tmp_path / "Beta" / "Duplicate.md"
+
+
 def test_link_to_exported_page_becomes_relative(tmp_path):
     a = PageRef(id="1", title="Alpha")
     b = PageRef(id="2", title="Beta")
