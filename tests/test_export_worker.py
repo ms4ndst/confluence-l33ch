@@ -65,8 +65,8 @@ def _run(tmp_path, pages=None, **opts):
     logs: list[str] = []
     worker.log.connect(logs.append)
     worker.finished.connect(
-        lambda s, f, k, o: results.update(
-            success=s, failure=f, skipped=k, organizational=o
+        lambda s, f, k, o, b: results.update(
+            success=s, failure=f, skipped=k, organizational=o, blank=b
         )
     )
     worker.run()
@@ -224,8 +224,8 @@ def test_cancel_stops_before_the_next_page(tmp_path):
     worker.page_done.connect(lambda *_: worker.cancel())
     finished = {}
     worker.finished.connect(
-        lambda s, f, k, o: finished.update(
-            success=s, failure=f, skipped=k, organizational=o
+        lambda s, f, k, o, b: finished.update(
+            success=s, failure=f, skipped=k, organizational=o, blank=b
         )
     )
     worker.run()
@@ -233,15 +233,50 @@ def test_cancel_stops_before_the_next_page(tmp_path):
     assert not (tmp_path / "Beta_2.md").exists()
 
 
-def test_empty_body_is_reported_as_a_failure(tmp_path):
+def test_empty_body_is_reported_as_blank_not_failed(tmp_path):
     pages = [PageRef(id="3", title="Empty")]
     STORAGE["3"] = "   "
     try:
         result = _run(tmp_path, pages=pages)
     finally:
         del STORAGE["3"]
-    assert result["failure"] == 1
-    assert any("no storage-format body" in line for line in result["logs"])
+    assert (result["failure"], result["blank"], result["organizational"]) == (
+        0,
+        1,
+        0,
+    )
+    assert not (tmp_path / "Empty_3.md").exists()
+    assert any("Blank page" in line for line in result["logs"])
+
+
+def test_blank_page_can_be_written_as_placeholder(tmp_path):
+    pages = [PageRef(id="3", title="Empty")]
+    STORAGE["3"] = "   "
+    try:
+        result = _run(tmp_path, pages=pages, write_blank_pages=True)
+    finally:
+        del STORAGE["3"]
+    assert (result["failure"], result["blank"]) == (0, 1)
+    text = (tmp_path / "Empty_3.md").read_text(encoding="utf-8")
+    assert "# Empty" in text
+    assert "empty in Confluence" in text
+    assert "pageId=3" in text
+
+
+def test_blank_folder_page_placeholder_lands_inside_its_folder(tmp_path):
+    parent = PageRef(id="10", title="Container", is_root=True)
+    child = PageRef(id="11", title="Child", depth=1, ancestor_titles=("Container",))
+    STORAGE["10"] = "   "
+    STORAGE["11"] = "<p>Child body.</p>"
+    try:
+        result = _run(
+            tmp_path, pages=[parent, child], mirror_tree=True, write_blank_pages=True
+        )
+    finally:
+        del STORAGE["10"]
+        del STORAGE["11"]
+    assert (result["failure"], result["organizational"]) == (0, 1)
+    assert (tmp_path / "Container" / "Container.md").is_file()
 
 
 def test_blank_page_with_subpages_is_organizational_not_failed(tmp_path):

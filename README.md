@@ -308,6 +308,7 @@ the first export). The directory is also where
 | **Rewrite wiki links to local files** | on | Links between exported pages point at the sibling `.md`. Links out of the export fall back to **Link to pages outside the export** below. |
 | **Link to pages outside the export** | on | A link to a page not in this export (a different space, or one you didn't select) points at its live Confluence URL, which needs a logged-in browser session to open. Off renders it as plain text instead — useful for an export you'll share with someone without access, or read offline. |
 | **Include page ID in filenames** | on | Names each file `Title_12345.md` instead of just `Title.md`. The ID guarantees a unique, rename-stable filename; off is plainer but relies on titles being unique — two pages that would otherwise land on the same filename (same title, same folder) get a ` (2)`, ` (3)`, … suffix instead of overwriting each other. |
+| **Create files for blank pages** | off | Writes a placeholder `.md` — the title, an "empty in Confluence" note and the source link (plus front matter if that's on) — for pages that have no content, instead of skipping them. Covers both blank leaf pages and blank pages that only group subpages, so every page appears in the export and its links and `README.md` entry resolve. The pages are still counted as blank/organizational in the summary, not as failures. |
 | **Generate README.md** | on | A `README.md` at the output root listing every page, indented by depth. |
 | **Download images to a central folder** | off | Fetches *embedded* images into a shared `images/` folder under the output directory and rewrites each `.md` to a relative link, instead of pointing at the live Confluence URL. See [Downloaded images and files](#downloaded-images-and-files). |
 | **Download linked files to a central folder** | off | Fetches files a page *links to* (a linked PDF, `.docx`, etc. — not an embedded image) into a shared `files/` folder, independently of the images option. See [Downloaded images and files](#downloaded-images-and-files). |
@@ -326,6 +327,15 @@ children. With **Mirror page hierarchy as folders** on, that title is still
 used as the folder those children land in; without it, the page is simply
 skipped. Either way it's counted separately from real failures, since there
 was never anything to write.
+
+A blank page with **no** subpages is reported the same way, as a trailing
+`B blank page(s) skipped.` — typically a page whose content was cleared
+(for example after a migration) but which was never deleted. Confluence
+returns such a page normally with an empty body; a page the account isn't
+allowed to read comes back as an HTTP 403/404 instead and *is* counted as
+failed. Each blank page is named in the log as
+`= Blank page (empty in Confluence), skipped: <title>`. Tick **Create files
+for blank pages** to write a placeholder file for them instead.
 
 Closing the window cancels any running work and waits up to five seconds for
 the threads to stop before exiting.

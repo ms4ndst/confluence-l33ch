@@ -74,6 +74,7 @@ class ExportOptions:
     resolve_links: bool = True       # rewrite intra-wiki links to local files
     link_out_of_scope: bool = True   # link pages outside the export to their live URL
     include_page_id: bool = True     # append "_<page id>" to each filename
+    write_blank_pages: bool = False  # write a placeholder .md for empty pages
     write_index: bool = True         # emit README.md linking every page
     skip_unchanged: bool = False     # consult .l33ch-state.json and skip
     download_images: bool = False    # fetch attachments into a shared images/ folder
@@ -88,12 +89,28 @@ class ExportOptions:
         return self.export_format in ("pdf", "both")
 
 
+class BlankPageError(ConfluenceError):
+    """The page exists and was readable, but its body is empty.
+
+    Not a failure: Confluence hands back a normal response with an empty
+    storage body (a page it couldn't let us read would be a 403/404
+    instead), so there is simply nothing to write. Carries the page JSON so
+    a placeholder file can still get front matter.
+    """
+
+    def __init__(self, raw: dict):
+        super().__init__("The page is blank — it has no content.")
+        self.raw = raw
+
+
 @dataclass
 class ExportStats:
     succeeded: int = 0
     failed: int = 0
     skipped: int = 0
     organizational: int = 0  # blank pages kept only as a folder level for subpages
+    blank: int = 0           # blank pages with no subpages — nothing to write
+    placeholders: int = 0    # placeholder files written for blank pages
     unknown_macros: Counter = field(default_factory=Counter)
     attachments: int = 0
     images_downloaded: int = 0
@@ -107,7 +124,8 @@ class ExportWorker(QObject):
     page_done = Signal(str, str)         # page_id, destination_path
     page_failed = Signal(str, str)       # page_id, error_message
     log = Signal(str)                    # log line
-    finished = Signal(int, int, int, int)  # success, failure, skipped, organizational
+    # success, failure, skipped, organizational, blank
+    finished = Signal(int, int, int, int, int)
 
     def __init__(
         self,
@@ -247,17 +265,13 @@ class ExportWorker(QObject):
         """
         return any(page.title in other.ancestor_titles for other in self._pages)
 
-    def _is_organizational_page(self, page: PageRef, exc: Exception) -> bool:
+    def _is_organizational_page(self, page: PageRef) -> bool:
         """A blank page with subpages under it isn't a failure — it's a
         Confluence pattern for grouping pages in the tree, same as a folder
         with no files of its own. Its title already appears in its
         subpages' paths (mirrored layout) or ancestor chain regardless, so
         there's nothing lost by not writing a file for it."""
-        return (
-            isinstance(exc, ConfluenceError)
-            and "no storage-format body" in str(exc)
-            and self._has_children_in_export(page)
-        )
+        return self._has_children_in_export(page)
 
     # --- link + attachment resolution -----------------------------------
 
@@ -489,14 +503,37 @@ class ExportWorker(QObject):
                 if page.last_updated:
                     page_state[page.id] = page.last_updated
             except Exception as exc:  # noqa: BLE001 — every error reaches the user
-                if self._is_organizational_page(page, exc):
-                    self._stats.organizational += 1
-                    if opts.mirror_tree:
+                if isinstance(exc, BlankPageError):
+                    wrote_placeholder = False
+                    if opts.write_blank_pages and opts.wants_md:
+                        try:
+                            path = self._write_placeholder(page, exc.raw)
+                        except OSError as write_exc:
+                            self.log.emit(
+                                f"  ! Could not write placeholder: {write_exc}"
+                            )
+                        else:
+                            wrote_placeholder = True
+                            self._stats.placeholders += 1
+                            self.log.emit(f"  -> {path} (placeholder)")
+                            self.page_done.emit(page.id, str(path))
+                    if not self._is_organizational_page(page):
+                        # Typically a page whose content was cleared (e.g.
+                        # after a migration) but which was never deleted.
+                        self._stats.blank += 1
+                        self.log.emit(
+                            "  = Blank page (empty in Confluence)"
+                            + ("" if wrote_placeholder else ", skipped")
+                            + f": {page.title}"
+                        )
+                    elif opts.mirror_tree:
+                        self._stats.organizational += 1
                         self.log.emit(
                             "  = No content of its own — its title became a "
                             f"folder for its subpages: {page.title}"
                         )
                     else:
+                        self._stats.organizational += 1
                         self.log.emit(
                             "  = No content of its own (a Confluence "
                             f"organizational page): {page.title}"
@@ -532,6 +569,7 @@ class ExportWorker(QObject):
             self._stats.failed,
             self._stats.skipped,
             self._stats.organizational,
+            self._stats.blank,
         )
 
     # --- per-page export -------------------------------------------------
@@ -550,10 +588,7 @@ class ExportWorker(QObject):
 
         storage, raw = client.storage_body(page.id)
         if not storage.strip():
-            raise ConfluenceError(
-                "The page has no storage-format body. Either it is a blank page "
-                "or the account cannot read its content."
-            )
+            raise BlankPageError(raw)
 
         result = convert_storage(
             storage,
@@ -570,6 +605,26 @@ class ExportWorker(QObject):
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(body.rstrip() + "\n", encoding="utf-8")
+        return destination
+
+    def _write_placeholder(self, page: PageRef, raw: dict) -> Path:
+        """Write a stand-in ``.md`` for a page that is empty in Confluence.
+
+        Keeps the page visible in the export (and its links and index entry
+        working) even though there's no content to convert.
+        """
+        destination = self._destination(page, ".md")
+        if destination.exists() and not self._options.overwrite:
+            return destination
+        body = (
+            f"# {page.title}\n\n"
+            "_This page is empty in Confluence._\n\n"
+            f"Source: {self._page_url(page.id)}"
+        )
+        if self._options.front_matter:
+            body = self._front_matter(page, raw) + "\n\n" + body
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(body + "\n", encoding="utf-8")
         return destination
 
     def _export_pdf(self, client: ConfluenceClient, page: PageRef) -> Path:
@@ -638,6 +693,23 @@ class ExportWorker(QObject):
                 f"Note: {self._stats.organizational} page(s) had no content "
                 "of their own — they exist only to group subpages and were "
                 "skipped rather than counted as failures."
+            )
+        if self._stats.placeholders:
+            self.log.emit(
+                f"Wrote {self._stats.placeholders} placeholder file(s) for "
+                "blank pages."
+            )
+        if self._stats.blank:
+            self.log.emit(
+                f"Note: {self._stats.blank} page(s) are blank in Confluence "
+                "(no content and no subpages — often emptied after a "
+                "migration) and were "
+                + (
+                    "written as placeholders"
+                    if self._options.write_blank_pages and self._options.wants_md
+                    else "skipped"
+                )
+                + " rather than counted as failures."
             )
         if self._options.download_images:
             if self._stats.images_downloaded:

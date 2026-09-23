@@ -770,6 +770,13 @@ class MainWindow(QMainWindow):
             "Off by default: without this, linked files stay pointed at\n"
             "Confluence and only load for a reader with a logged-in session."
         )
+        self.write_blank_check = QCheckBox("Create files for blank pages")
+        self.write_blank_check.setToolTip(
+            "Write a placeholder .md (title, an 'empty in Confluence' note\n"
+            "and the source link) for pages that have no content, instead\n"
+            "of skipping them. Keeps every page visible in the export and\n"
+            "its links and index entries working."
+        )
         self.include_page_id_check = QCheckBox("Include page ID in filenames")
         self.include_page_id_check.setChecked(True)
         self.include_page_id_check.setToolTip(
@@ -789,6 +796,7 @@ class MainWindow(QMainWindow):
         second.addWidget(self.download_linked_files_check, 2, 1)
         second.addWidget(self.link_out_of_scope_check, 3, 0)
         second.addWidget(self.include_page_id_check, 3, 1)
+        second.addWidget(self.write_blank_check, 4, 0)
         second.setColumnStretch(2, 1)
         outer.addLayout(second)
 
@@ -879,6 +887,7 @@ class MainWindow(QMainWindow):
                    self.mirror_check, self.front_matter_check,
                    self.resolve_links_check, self.link_out_of_scope_check,
                    self.index_check, self.include_page_id_check,
+                   self.write_blank_check,
                    self.download_images_check, self.download_linked_files_check,
                    self.repeat_check):
             cb.toggled.connect(self._schedule_save)
@@ -914,6 +923,7 @@ class MainWindow(QMainWindow):
             "resolve_links": self.resolve_links_check.isChecked(),
             "link_out_of_scope": self.link_out_of_scope_check.isChecked(),
             "include_page_id": self.include_page_id_check.isChecked(),
+            "write_blank_pages": self.write_blank_check.isChecked(),
             "write_index": self.index_check.isChecked(),
             "download_images": self.download_images_check.isChecked(),
             "download_linked_files": self.download_linked_files_check.isChecked(),
@@ -974,6 +984,7 @@ class MainWindow(QMainWindow):
             ("resolve_links", self.resolve_links_check),
             ("link_out_of_scope", self.link_out_of_scope_check),
             ("include_page_id", self.include_page_id_check),
+            ("write_blank_pages", self.write_blank_check),
             ("write_index", self.index_check),
             ("download_images", self.download_images_check),
             ("download_linked_files", self.download_linked_files_check),
@@ -1353,6 +1364,7 @@ class MainWindow(QMainWindow):
             resolve_links=self.resolve_links_check.isChecked(),
             link_out_of_scope=self.link_out_of_scope_check.isChecked(),
             include_page_id=self.include_page_id_check.isChecked(),
+            write_blank_pages=self.write_blank_check.isChecked(),
             write_index=self.index_check.isChecked(),
             skip_unchanged=self.skip_unchanged_check.isChecked(),
             download_images=self.download_images_check.isChecked(),
@@ -1387,7 +1399,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"{current} ({done + 1}/{total})")
 
     def _on_export_finished(
-        self, success: int, failure: int, skipped: int, organizational: int
+        self,
+        success: int,
+        failure: int,
+        skipped: int,
+        organizational: int,
+        blank: int = 0,
     ) -> None:
         self._worker = None
         self._thread = None
@@ -1402,6 +1419,11 @@ class MainWindow(QMainWindow):
                 f" {organizational} page(s) had no content of their own "
                 "(organizational only)."
             )
+        if blank:
+            if self.write_blank_check.isChecked():
+                msg += f" {blank} blank page(s) written as placeholders."
+            else:
+                msg += f" {blank} blank page(s) skipped."
         self.statusBar().showMessage(msg)
         self._append_log(msg)
         self._close_run_log_file()
