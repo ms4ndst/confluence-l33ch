@@ -376,3 +376,25 @@ def test_unknown_macros_are_reported_once(tmp_path):
     finally:
         del STORAGE["4"]
     assert any("gliffy (1)" in line for line in result["logs"])
+
+
+def test_several_spaces_index_has_a_section_per_space(tmp_path):
+    pages = [
+        PageRef(id="1", title="Alpha", space_key="VSA"),
+        PageRef(id="2", title="Beta", space_key="CEPL"),
+    ]
+    worker = ExportWorker(
+        pages,
+        credentials=Credentials(base_url="https://wiki.example.com"),
+        space_key="VSA, CEPL",
+        options=ExportOptions(output_dir=tmp_path),
+    )
+    worker.run()
+    assert (tmp_path / "VSA" / "Alpha_1.md").is_file()
+    assert (tmp_path / "CEPL" / "Beta_2.md").is_file()
+    index = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert index.startswith("# VSA, CEPL export")
+    assert "## VSA\n\n- [Alpha](VSA/Alpha_1.md)" in index
+    assert "## CEPL\n\n- [Beta](CEPL/Beta_2.md)" in index
+    state = json.loads((tmp_path / STATE_FILENAME).read_text(encoding="utf-8"))
+    assert state["space_keys"] == ["VSA", "CEPL"]

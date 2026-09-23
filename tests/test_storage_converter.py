@@ -223,3 +223,80 @@ def test_malformed_markup_does_not_raise():
 def test_no_more_than_one_blank_line():
     out = md("<p>a</p><p></p><p></p><p>b</p>")
     assert "\n\n\n" not in out
+
+
+# --- regressions from a real compliance-portal page ----------------------
+
+
+def test_html_secure_style_block_is_dropped():
+    storage = (
+        '<ac:structured-macro ac:name="html-secure"><ac:plain-text-body>'
+        "<![CDATA[<style>.panel { color: red; }</style>]]>"
+        "</ac:plain-text-body></ac:structured-macro><p>Body</p>"
+    )
+    result = convert_storage(storage)
+    assert result.markdown == "Body"
+    assert "html-secure" not in result.unknown_macros
+
+
+def test_html_macro_keeps_real_content():
+    storage = (
+        '<ac:structured-macro ac:name="html"><ac:plain-text-body>'
+        "<![CDATA[<style>p{}</style><p>Hello <b>there</b></p>]]>"
+        "</ac:plain-text-body></ac:structured-macro>"
+    )
+    assert convert_storage(storage).markdown == "Hello **there**"
+
+
+def test_bare_style_element_is_dropped():
+    assert convert_storage("<style>.x{}</style><p>Kept</p>").markdown == "Kept"
+
+
+def test_trailing_space_inside_bold_moves_outside():
+    storage = "<p><strong>The Coordinator </strong>ensures it.</p>"
+    assert convert_storage(storage).markdown == "**The Coordinator** ensures it."
+
+
+def test_whitespace_only_bold_is_not_wrapped():
+    assert convert_storage("<p>a<strong> </strong>b</p>").markdown == "a b"
+
+
+def test_heading_in_table_cell_becomes_bold():
+    storage = (
+        "<table><tbody><tr><td><h4>Date:</h4></td><td><h4>2026-01-01</h4></td>"
+        "</tr></tbody></table>"
+    )
+    md = convert_storage(storage).markdown
+    assert "| **Date:** | **2026-01-01** |" in md
+    assert "#" not in md
+
+
+def test_empty_heading_is_dropped():
+    assert convert_storage("<h4><br/></h4><p>Text</p>").markdown == "Text"
+
+
+def test_empty_heading_in_cell_leaves_no_hashes():
+    storage = (
+        "<table><tbody><tr><td><h4>Root cause:</h4><h4><br/></h4></td>"
+        "<td>x</td></tr></tbody></table>"
+    )
+    md = convert_storage(storage).markdown
+    assert "| **Root cause:** | x |" in md
+
+
+def test_untitled_panel_has_no_generic_label():
+    storage = (
+        '<ac:structured-macro ac:name="panel"><ac:rich-text-body>'
+        "<p>Inside</p></ac:rich-text-body></ac:structured-macro>"
+    )
+    assert convert_storage(storage).markdown == "> Inside"
+
+
+def test_titled_panel_keeps_its_title():
+    storage = (
+        '<ac:structured-macro ac:name="panel">'
+        '<ac:parameter ac:name="title">Scope</ac:parameter>'
+        "<ac:rich-text-body><p>Inside</p></ac:rich-text-body>"
+        "</ac:structured-macro>"
+    )
+    assert convert_storage(storage).markdown == "> **Scope**\n>\n> Inside"

@@ -122,3 +122,22 @@ def test_anonymous_session_warns_but_continues():
     result = _run(_request())
     assert result["error"] == ""
     assert any("Continuing unauthenticated" in line for line in result["logs"])
+
+
+def test_several_space_keys_are_scanned_in_turn_and_tagged():
+    StubClient.space_result = [PageRef(id="7", title="Page")]
+    result = _run(_request(space_key="DOCS, TEAM ,DOCS"))
+    assert result["error"] == ""
+    assert [p.space_key for p in result["pages"]] == ["DOCS", "TEAM"]
+    assert any(line == "Space TEAM:" for line in result["logs"])
+
+
+def test_single_space_pages_are_tagged_too():
+    StubClient.space_result = [PageRef(id="7", title="Page")]
+    result = _run(_request())
+    assert result["pages"][0].space_key == "DOCS"
+
+
+def test_top_page_with_several_spaces_is_rejected():
+    result = _run(_request(space_key="DOCS, TEAM", top_page_id="100"))
+    assert "single space key" in result["error"]

@@ -9,12 +9,14 @@ Two scopes:
 * **Subtree** — a root page (by ID or title) plus every descendant, found with
   a CQL ``ancestor=`` query.
 * **Whole space** — every page in the space, optionally filtered to those
-  modified since the last sync.
+  modified since the last sync. The Space key field may list several spaces
+  separated by commas; each is scanned in turn and every page is tagged with
+  the space it came from.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from PySide6.QtCore import QObject, Signal
@@ -24,6 +26,7 @@ from .confluence_client import (
     ConfluenceError,
     Credentials,
     PageRef,
+    parse_space_keys,
 )
 
 
@@ -40,6 +43,10 @@ class DiscoveryRequest:
     @property
     def is_subtree(self) -> bool:
         return bool(self.top_page_id.strip() or self.top_page_title.strip())
+
+    @property
+    def space_keys(self) -> list[str]:
+        return parse_space_keys(self.space_key)
 
 
 class DiscoveryWorker(QObject):
@@ -94,8 +101,15 @@ class DiscoveryWorker(QObject):
 
     def _discover_subtree(self, client: ConfluenceClient) -> list[PageRef]:
         req = self._request
+        keys = req.space_keys
+        if len(keys) > 1:
+            raise ConfluenceError(
+                "A top page can only be used with a single space key. Clear the "
+                "top page to export several whole spaces, or enter one space."
+            )
+        space = keys[0] if keys else ""
         root_id = client.resolve_page_id(
-            req.space_key, req.top_page_id, req.top_page_title
+            space, req.top_page_id, req.top_page_title
         )
         if not root_id:
             raise ConfluenceError(
@@ -111,6 +125,7 @@ class DiscoveryWorker(QObject):
             ),
             is_root=True,
             depth=0,
+            space_key=space,
         )
         self.log.emit(f"Root page: {root_ref.title} (id={root_id})")
 
@@ -119,11 +134,12 @@ class DiscoveryWorker(QObject):
             should_cancel=lambda: self._cancelled,
             on_batch=lambda n: self.log.emit(f"  … {n} descendant(s) in batch"),
         )
-        return [root_ref, *descendants]
+        return [root_ref, *(replace(p, space_key=space) for p in descendants)]
 
     def _discover_space(self, client: ConfluenceClient) -> list[PageRef]:
         req = self._request
-        if not req.space_key.strip():
+        keys = req.space_keys
+        if not keys:
             raise ConfluenceError(
                 "A space key is required when no top page is given."
             )
@@ -132,9 +148,19 @@ class DiscoveryWorker(QObject):
                 "Space scan limited to pages modified since "
                 f"{req.modified_since.isoformat(timespec='seconds')}."
             )
-        return client.space_pages(
-            req.space_key,
-            modified_since=req.modified_since,
-            should_cancel=lambda: self._cancelled,
-            on_batch=lambda n: self.log.emit(f"  … {n} page(s) in batch"),
-        )
+        pages: list[PageRef] = []
+        for key in keys:
+            if self._cancelled:
+                break
+            if len(keys) > 1:
+                self.log.emit(f"Space {key}:")
+            found = client.space_pages(
+                key,
+                modified_since=req.modified_since,
+                should_cancel=lambda: self._cancelled,
+                on_batch=lambda n: self.log.emit(f"  … {n} page(s) in batch"),
+            )
+            if len(keys) > 1:
+                self.log.emit(f"  {len(found)} page(s) in {key}")
+            pages.extend(replace(p, space_key=key) for p in found)
+        return pages

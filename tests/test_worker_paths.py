@@ -6,11 +6,13 @@ from app.confluence_client import Credentials, PageRef
 from app.worker import ExportOptions, ExportWorker, sanitize_filename
 
 
-def _worker(tmp_path: Path, pages: list[PageRef], **opts) -> ExportWorker:
+def _worker(
+    tmp_path: Path, pages: list[PageRef], space_key: str = "DOCS", **opts
+) -> ExportWorker:
     return ExportWorker(
         pages,
         credentials=Credentials(base_url="https://wiki.example.com"),
-        space_key="DOCS",
+        space_key=space_key,
         options=ExportOptions(output_dir=tmp_path, **opts),
     )
 
@@ -378,3 +380,41 @@ def test_format_flags(tmp_path):
     assert (md_only.wants_md, md_only.wants_pdf) == (True, False)
     assert (pdf_only.wants_md, pdf_only.wants_pdf) == (False, True)
     assert (both.wants_md, both.wants_pdf) == (True, True)
+
+
+def test_parse_space_keys():
+    from app.confluence_client import parse_space_keys
+
+    assert parse_space_keys(" VSA, cepl ,,VSA ") == ["VSA", "cepl"]
+    assert parse_space_keys("") == []
+
+
+def test_several_spaces_get_their_own_folders(tmp_path):
+    a = PageRef(id="1", title="Home", space_key="VSA")
+    b = PageRef(id="2", title="Home", space_key="CEPL")
+    worker = _worker(tmp_path, [a, b], space_key="VSA, CEPL")
+    assert worker._destination(a, ".md") == tmp_path / "VSA" / "Home_1.md"
+    assert worker._destination(b, ".md") == tmp_path / "CEPL" / "Home_2.md"
+
+
+def test_several_spaces_mirrored_layout_is_per_space(tmp_path):
+    parent = PageRef(id="1", title="Docs", space_key="VSA")
+    child = PageRef(id="2", title="Intro", ancestor_titles=("Docs",), space_key="VSA")
+    # Same title in another space, without children: must not become a folder.
+    other = PageRef(id="3", title="Docs", space_key="CEPL")
+    worker = _worker(
+        tmp_path, [parent, child, other], space_key="VSA, CEPL", mirror_tree=True
+    )
+    assert worker._destination(parent, ".md") == tmp_path / "VSA" / "Docs" / "Docs.md"
+    assert worker._destination(child, ".md") == tmp_path / "VSA" / "Docs" / "Intro_2.md"
+    assert worker._destination(other, ".md") == tmp_path / "CEPL" / "Docs_3.md"
+
+
+def test_links_resolve_within_the_linking_pages_space(tmp_path):
+    a1 = PageRef(id="1", title="Alpha", space_key="VSA")
+    b1 = PageRef(id="2", title="Beta", space_key="VSA")
+    b2 = PageRef(id="3", title="Beta", space_key="CEPL")
+    worker = _worker(tmp_path, [a1, b1, b2], space_key="VSA, CEPL")
+    resolve = worker._link_resolver_for(a1, worker._build_link_index())
+    assert resolve("Beta", "") == "Beta_2.md"
+    assert resolve("Beta", "CEPL") == "../CEPL/Beta_3.md"

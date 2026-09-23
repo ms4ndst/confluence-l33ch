@@ -20,6 +20,7 @@ from .confluence_client import (
     ConfluenceError,
     Credentials,
     PageRef,
+    parse_space_keys,
 )
 from .storage_converter import convert_storage
 
@@ -145,6 +146,11 @@ class ExportWorker(QObject):
         self._pages = pages
         self._credentials = credentials
         self._space_key = space_key
+        # The Space key field may list several spaces ("VSA, CEPL"). With more
+        # than one, every space gets its own top-level folder: titles are only
+        # unique *within* a space, so two spaces side by side would collide.
+        self._space_keys = parse_space_keys(space_key)
+        self._multi_space = len(self._space_keys) > 1
         self._options = options
         self._cancelled = False
         self._stats = ExportStats()
@@ -157,8 +163,9 @@ class ExportWorker(QObject):
         # every folder the mirrored layout creates. A page whose own
         # (ancestors + title) is in here has subpages, so in the mirrored
         # layout it's written *inside* its folder as ``<folder>.md``.
+        # Chains start with the page's space, so two spaces never share one.
         self._folder_chains: set[tuple[str, ...]] = {
-            page.ancestor_titles[:n]
+            (self._space_of(page), *page.ancestor_titles[:n])
             for page in pages
             for n in range(1, len(page.ancestor_titles) + 1)
         }
@@ -175,10 +182,22 @@ class ExportWorker(QObject):
 
     # --- paths ----------------------------------------------------------
 
-    def _sibling_group(self, parents: tuple[str, ...]) -> tuple[str, ...]:
-        """The folder a name lands in: its ancestor chain when mirroring,
-        otherwise the output root for everything."""
-        return parents if self._options.mirror_tree else ()
+    def _space_of(self, page: PageRef) -> str:
+        """The page's space, falling back to the run's only space for pages
+        built without one."""
+        if page.space_key:
+            return page.space_key
+        return self._space_keys[0] if len(self._space_keys) == 1 else ""
+
+    def _space_dir(self, page: PageRef) -> Path:
+        if not self._multi_space:
+            return Path()
+        return Path(sanitize_filename(self._space_of(page) or "unknown-space"))
+
+    def _sibling_group(self, space: str, parents: tuple[str, ...]) -> tuple[str, ...]:
+        """The folder a name lands in: its space plus ancestor chain when
+        mirroring, otherwise the space's top folder for everything."""
+        return (space, *parents) if self._options.mirror_tree else (space,)
 
     def _compute_pad_widths(self) -> dict[tuple[str, ...], int]:
         """Widest leading number among the names sharing each folder.
@@ -196,11 +215,12 @@ class ExportWorker(QObject):
             return widths
         names: set[tuple[tuple[str, ...], str]] = set()
         for page in self._pages:
+            space = self._space_of(page)
             chain = page.ancestor_titles
-            names.add((self._sibling_group(chain), page.title))
+            names.add((self._sibling_group(space, chain), page.title))
             if self._options.mirror_tree:
                 for n in range(len(chain)):
-                    names.add((chain[:n], chain[n]))
+                    names.add(((space, *chain[:n]), chain[n]))
         for group, title in names:
             name = sanitize_filename(title)
             if _LEADING_DATE.match(name):
@@ -210,10 +230,10 @@ class ExportWorker(QObject):
                 widths[group] = max(widths.get(group, 0), len(match.group()))
         return widths
 
-    def _name(self, parents: tuple[str, ...], title: str) -> str:
+    def _name(self, space: str, parents: tuple[str, ...], title: str) -> str:
         """Filesystem name for ``title`` inside the folder of ``parents``."""
         name = sanitize_filename(title)
-        width = self._pad_widths.get(self._sibling_group(parents))
+        width = self._pad_widths.get(self._sibling_group(space, parents))
         if width:
             match = _LEADING_NUMBER.match(name)
             if match:
@@ -221,19 +241,23 @@ class ExportWorker(QObject):
         return name
 
     def _relative_dir(self, page: PageRef) -> Path:
+        space_dir = self._space_dir(page)
         if not self._options.mirror_tree:
-            return Path()
+            return space_dir
+        space = self._space_of(page)
         chain = page.ancestor_titles
-        return Path(*[self._name(chain[:n], t) for n, t in enumerate(chain)])
+        return space_dir.joinpath(
+            *[self._name(space, chain[:n], t) for n, t in enumerate(chain)]
+        )
 
     def _page_name(self, page: PageRef) -> str:
-        return self._name(page.ancestor_titles, page.title)
+        return self._name(self._space_of(page), page.ancestor_titles, page.title)
 
     def _is_folder_page(self, page: PageRef) -> bool:
         """Whether the mirrored layout turns this page into a folder."""
-        return (
-            self._options.mirror_tree
-            and (*page.ancestor_titles, page.title) in self._folder_chains
+        return self._options.mirror_tree and (
+            (self._space_of(page), *page.ancestor_titles, page.title)
+            in self._folder_chains
         )
 
     def _compute_stems(self) -> dict[str, str]:
@@ -321,7 +345,11 @@ class ExportWorker(QObject):
         perfect guarantee against a rare cross-space title collision, but
         good enough to distinguish "empty on purpose" from "actually broken".
         """
-        return any(page.title in other.ancestor_titles for other in self._pages)
+        space = self._space_of(page)
+        return any(
+            page.title in other.ancestor_titles and self._space_of(other) == space
+            for other in self._pages
+        )
 
     def _is_organizational_page(self, page: PageRef) -> bool:
         """A blank page with subpages under it isn't a failure — it's a
@@ -333,18 +361,23 @@ class ExportWorker(QObject):
 
     # --- link + attachment resolution -----------------------------------
 
-    def _build_link_index(self) -> dict[str, Path]:
-        """Map lower-cased page title → the ``.md`` file we're writing for it.
+    def _build_link_index(self) -> dict[tuple[str, str], Path]:
+        """Map (space, title), both lower-cased → the ``.md`` we write for it.
 
-        Titles are unique per space in Confluence, so the title is a safe key
-        and it's exactly what ``<ri:page ri:content-title="…">`` gives us.
+        Titles are unique per space in Confluence, so (space, title) is a
+        safe key and it's exactly what ``<ri:page ri:content-title="…"
+        ri:space-key="…">`` gives us (the space key only when it differs from
+        the linking page's own space).
         """
-        index: dict[str, Path] = {}
+        index: dict[tuple[str, str], Path] = {}
         for page in self._pages:
-            index[page.title.strip().lower()] = self._destination(page, ".md")
+            key = (self._space_of(page).lower(), page.title.strip().lower())
+            index[key] = self._destination(page, ".md")
         return index
 
-    def _link_resolver_for(self, page: PageRef, link_index: dict[str, Path]):
+    def _link_resolver_for(
+        self, page: PageRef, link_index: dict[tuple[str, str], Path]
+    ):
         """Return a resolver that points at a local file when we have one.
 
         Falls back to the live Confluence URL for a link out of the exported
@@ -356,18 +389,20 @@ class ExportWorker(QObject):
         """
         source_dir = (self._destination(page, ".md")).parent
 
+        own_space = self._space_of(page)
+
         def resolve(title: str, space: str) -> str:
             if not title:
                 return ""
+            space_key = space or own_space
             if self._options.resolve_links:
-                target = link_index.get(title.strip().lower())
+                target = link_index.get((space_key.lower(), title.strip().lower()))
                 if target is not None:
                     rel = os.path.relpath(target, source_dir)
                     return quote(rel.replace(os.sep, "/"))
             if not self._options.link_out_of_scope:
                 return ""
             base = self._credentials.base_url.rstrip("/")
-            space_key = space or self._space_key
             return f"{base}/display/{quote(space_key)}/{quote(title)}"
 
         return resolve
@@ -617,7 +652,8 @@ class ExportWorker(QObject):
         state["last_sync"] = datetime.now().astimezone().isoformat(
             timespec="seconds"
         )
-        state["space_key"] = self._space_key
+        state["space_key"] = ", ".join(self._space_keys)
+        state["space_keys"] = self._space_keys
         self._save_state(state)
 
         self._report_conversion_notes()
@@ -702,7 +738,7 @@ class ExportWorker(QObject):
             "---",
             f'title: "{page.title.replace(chr(34), chr(39))}"',
             f"page_id: \"{page.id}\"",
-            f"space: \"{self._space_key}\"",
+            f"space: \"{self._space_of(page)}\"",
             f"source: {self._page_url(page.id)}",
         ]
         if page.last_updated:
@@ -724,18 +760,32 @@ class ExportWorker(QObject):
         """
         out = self._options.output_dir
         lines = [
-            f"# {self._space_key or 'Confluence'} export",
+            f"# {', '.join(self._space_keys) or 'Confluence'} export",
             "",
             f"{len(self._pages)} page(s) exported by confluence-l33ch "
             f"{__version__} on "
             f"{datetime.now().astimezone().isoformat(timespec='minutes')}.",
             "",
         ]
-        for page in self._pages:
+
+        def entry(page: PageRef) -> str:
             target = self._destination(page, ".md")
             rel = quote(os.path.relpath(target, out).replace(os.sep, "/"))
-            indent = "  " * page.depth
-            lines.append(f"{indent}- [{page.title}]({rel})")
+            return f"{'  ' * page.depth}- [{page.title}]({rel})"
+
+        if self._multi_space:
+            # One section per space, in the order the spaces were entered.
+            for space in self._space_keys:
+                in_space = [p for p in self._pages if self._space_of(p) == space]
+                if not in_space:
+                    continue
+                lines += [f"## {space}", ""]
+                lines += [entry(p) for p in in_space]
+                lines.append("")
+        else:
+            lines += [entry(p) for p in self._pages]
+        while lines and not lines[-1]:
+            lines.pop()
         out.mkdir(parents=True, exist_ok=True)
         path = out / INDEX_FILENAME
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")

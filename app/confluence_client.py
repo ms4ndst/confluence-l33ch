@@ -95,6 +95,9 @@ class PageRef:
     # Titles of the ancestors *below* the export root, outermost first. Drives
     # the "mirror page hierarchy" output layout.
     ancestor_titles: tuple[str, ...] = ()
+    # The space the page lives in. Set by discovery; "" means "the one space
+    # this run covers" for callers that build PageRefs by hand.
+    space_key: str = ""
 
     @property
     def last_updated_dt(self) -> datetime | None:
@@ -104,6 +107,21 @@ class PageRef:
             return datetime.fromisoformat(self.last_updated.replace("Z", "+00:00"))
         except ValueError:
             return None
+
+
+def parse_space_keys(text: str) -> list[str]:
+    """Split the Space key field into keys: ``"VSA, CEPL"`` → ``["VSA", "CEPL"]``.
+
+    Commas separate keys; surrounding whitespace and empty entries are
+    ignored, and a repeated key is kept once (first occurrence wins). Case is
+    left alone — personal space keys like ``~jdoe`` are case-sensitive.
+    """
+    keys: list[str] = []
+    for part in (text or "").split(","):
+        key = part.strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
 
 
 @dataclass

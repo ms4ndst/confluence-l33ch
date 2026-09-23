@@ -272,6 +272,13 @@ Two modes:
 * **Whole space** — leave both top-page fields blank. **Only pages changed
   since last sync** narrows the listing using the timestamp in
   `.l33ch-state.json`.
+* **Several spaces** — enter the keys in **Space key** separated by commas,
+  e.g. `VSA, CEPL, HR`, and leave the top-page fields blank. Each space is
+  scanned in turn (the log shows `Space CEPL:` and a per-space count), and in
+  the output every space gets its own folder — see [Output
+  layout](#output-layout). Spaces and whitespace around the commas are
+  ignored and a repeated key is scanned once. A top page only works with a
+  single space key; with several, discovery refuses to start.
 
 Click **Discover pages**. Discovery runs on a worker thread with a busy
 progress bar; the log reports who the server thinks you are and how many pages
@@ -279,14 +286,18 @@ came back per batch. Nothing is downloaded yet — only titles, IDs, timestamps
 and ancestry.
 
 The list fills with everything in scope, indented by depth, with a `ROOT` badge
-on the subtree root. Hover a row for its page ID, last-modified stamp and path.
+on the subtree root; with several spaces each row is prefixed with its space
+key, e.g. `[CEPL]`. Hover a row for its page ID, space, last-modified stamp and
+path.
 **Select all**, **Remove selected** and **Clear** prune the queue; whatever is
 left is exactly what gets exported.
 
 Note the asymmetry: **Only pages changed since last sync** applies to *space*
 scans, because the filter happens in the listing call. A subtree export always
 lists the whole tree — use **Skip unchanged pages** below to avoid
-re-downloading their bodies.
+re-downloading their bodies. When you add a space that the last sync didn't
+include, that run scans every page instead (the log says `Not synced before:
+…`) — the last sync time means nothing for a space that wasn't part of it.
 
 ### 3. Output directory
 
@@ -415,6 +426,25 @@ Switching layout or naming options (mirroring, page IDs in filenames) on an
 existing output folder doesn't remove the files written under the old
 names — export into a fresh folder, or clean up the old files afterwards.
 
+Several spaces (**Space key** `VSA, CEPL`): one top-level folder per space,
+named by its key, with the flat or mirrored layout inside each. Page titles
+are only unique within a space, so this keeps same-titled pages in different
+spaces apart:
+
+```text
+<output>/
+  README.md
+  VSA/
+    Product Docs/
+      Product Docs.md
+  CEPL/
+    Product Docs_5501.md
+```
+
+Links between pages resolve within the linking page's space, and a link into
+another exported space points across folders (`../CEPL/…`). The index
+`README.md` gets one `## <space>` section per space.
+
 `l33ch-log.txt` always sits at the output root (never inside a mirrored
 subfolder) — see [`l33ch-log.txt`](#l33ch-logtxt) below.
 
@@ -534,10 +564,13 @@ blank pages** on.
   "pages": {
     "123456": "2025-01-01T09:00:00.000+01:00"
   },
-  "space_key": "DOCS"
+  "space_key": "DOCS",
+  "space_keys": ["DOCS"]
 }
 ```
 
+`space_keys` lists the spaces the last run covered (`space_key` is the same
+list as text, kept for older versions).
 `pages` maps page ID → the last-modified stamp at the time it was exported;
 that is what **Skip unchanged pages** compares against. `last_sync` is what
 **Only pages changed since last sync** feeds into the space listing. Delete the
@@ -585,14 +618,22 @@ to a file of your choosing.
 The Markdown path parses the storage format with `html.parser` (stdlib only —
 no BeautifulSoup dependency) and handles:
 
-* headings, paragraphs, hard line breaks, horizontal rules, blockquotes
-* `strong` / `em` / `code` / `del` / `sup` / `sub`
+* headings, paragraphs, hard line breaks, horizontal rules, blockquotes —
+  empty headings (a stray `<h4><br/></h4>`) are dropped, and a heading inside
+  a table cell becomes bold text, since Markdown tables can't hold headings
+* `strong` / `em` / `code` / `del` / `sup` / `sub` — spaces Confluence
+  includes at the edge of a bold/italic run are moved outside the markers, so
+  `**The Coordinator** ensures` renders as bold instead of literal asterisks
 * nested ordered and unordered lists, and `ac:task-list` → `- [x]` / `- [ ]`
 * tables with or without a header row; multi-line cells are joined with
   `<br>` and pipes escaped
 * `code` / `noformat` macros → fenced blocks, with the language parameter
 * the admonition family (`info`, `note`, `tip`, `warning`, `panel`, `error`,
-  `success`) → blockquotes with a bold label
+  `success`) → blockquotes with a bold label (an untitled `panel` gets no
+  label — a bare "Panel" carries no meaning)
+* `html` / `html-secure` macros: the raw HTML is re-parsed, so a `<style>` or
+  `<script>` block (page restyling that means nothing outside Confluence) is
+  dropped and any real content is converted like the rest of the page
 * `expand`, `status`, `jira`, and layout-only wrappers (`excerpt`, `section`,
   `column`, `align`, …) which contribute their content and drop the wrapper
 * `ac:link` to other pages, resolved to a local file when that page is part
@@ -754,12 +795,13 @@ py -m pip install pytest
 py -m pytest tests -q
 ```
 
-157 tests cover the storage converter (every construct, plus malformed markup),
+175 tests cover the storage converter (every construct, plus malformed markup),
 the client's header building and ancestry→depth maths, cURL/header paste
 parsing and the probe URL, scope resolution and its error paths, the export
 worker's filename/link/front-matter logic (including the central image/file
 download paths), a full export run against a stubbed REST client (formats,
-incremental skip, mirrored layout, blank-page handling and placeholders, number padding,
+incremental skip, mirrored layout, multi-space exports, blank-page handling
+and placeholders, number padding,
 cancellation), and
 settings persistence, and worker-thread ownership. The thread tests abort the run rather than fail an
 assertion if they regress — that is the nature of the bug they guard.

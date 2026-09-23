@@ -52,6 +52,7 @@ from .confluence_client import (
     ConfluenceError,
     Credentials,
     PageRef,
+    parse_space_keys,
 )
 from .discovery import DiscoveryRequest, DiscoveryWorker
 from .md_to_pdf import MdToPdfWorker, wkhtmltopdf_version
@@ -587,10 +588,12 @@ class MainWindow(QMainWindow):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         self.space_edit = QLineEdit()
-        self.space_edit.setPlaceholderText("DOCS")
+        self.space_edit.setPlaceholderText("DOCS  or  DOCS, TEAM, HR")
         self.space_edit.setToolTip(
             "Confluence space key — the short upper-case code in a page URL,\n"
-            "e.g. the DOCS in /display/DOCS/Some+Page."
+            "e.g. the DOCS in /display/DOCS/Some+Page.\n"
+            "Separate several keys with commas to export several spaces in\n"
+            "one run; each space then gets its own folder in the output."
         )
         form.addRow("Space key:", self.space_edit)
 
@@ -1237,6 +1240,22 @@ class MainWindow(QMainWindow):
         except ValueError:
             return None
 
+    def _last_synced_spaces(self) -> list[str]:
+        """Space keys the last recorded sync covered (from the state file)."""
+        text = self.output_dir_edit.text().strip()
+        if not text:
+            return []
+        try:
+            import json
+
+            raw = json.loads((Path(text) / STATE_FILENAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        keys = raw.get("space_keys")
+        if isinstance(keys, list):
+            return [str(k) for k in keys]
+        return parse_space_keys(str(raw.get("space_key") or ""))
+
     def _start_discovery(self) -> None:
         if self._discovery_worker is not None or self._worker is not None:
             return
@@ -1251,21 +1270,43 @@ class MainWindow(QMainWindow):
             )
             return
         space = self.space_edit.text().strip()
+        space_keys = parse_space_keys(space)
         top_id = self.top_id_edit.text().strip()
         top_title = self.top_title_edit.text().strip()
-        if not space and not top_id:
+        if not space_keys and not top_id:
             QMessageBox.warning(
                 self, "Scope required",
                 "Enter a space key, or a top page ID to export a subtree.",
             )
+            self._auto_export_after_discovery = False
+            return
+        if len(space_keys) > 1 and (top_id or top_title):
+            QMessageBox.warning(
+                self, "One space for a top page",
+                "A top page can only be used with a single space key.\n\n"
+                "Clear the top page fields to export several whole spaces, or "
+                "enter just the space the top page is in.",
+            )
+            self._auto_export_after_discovery = False
             return
 
         modified_since = None
         if self.only_modified_check.isChecked() and not (top_id or top_title):
             modified_since = self._last_sync_time()
+            synced = self._last_synced_spaces()
+            new_spaces = [k for k in space_keys if k not in synced]
             if modified_since is None:
                 self._append_log(
                     "No previous sync recorded — scanning the whole space."
+                )
+            elif new_spaces:
+                # The last sync time says nothing about a space that wasn't
+                # part of that sync; filtering by it would silently skip most
+                # of the new space.
+                modified_since = None
+                self._append_log(
+                    "Not synced before: " + ", ".join(new_spaces)
+                    + " — scanning every page this time."
                 )
 
         request = DiscoveryRequest(
@@ -1329,10 +1370,14 @@ class MainWindow(QMainWindow):
     def _add_page(self, page: PageRef) -> None:
         indent = "    " * page.depth
         label = f"{indent}{page.title}"
+        if len(parse_space_keys(self.space_edit.text())) > 1 and page.space_key:
+            label = f"[{page.space_key}] {label}"
         item = QListWidgetItem(label)
         item.setData(PAGE_ROLE, page)
         item.setData(ROOT_ROLE, page.is_root)
         tooltip = [f"{page.title}", f"id={page.id}"]
+        if page.space_key:
+            tooltip.append(f"space={page.space_key}")
         if page.last_updated:
             tooltip.append(f"updated={page.last_updated}")
         if page.ancestor_titles:

@@ -56,6 +56,14 @@ ADMONITION_MACROS = {
 
 CODE_MACROS = frozenset({"code", "noformat"})
 
+# Macros whose plain-text body is raw HTML. Usually it's a <style> block that
+# restyles the Confluence page — meaningless outside it — so the body is
+# re-parsed as HTML (which drops <style>/<script>) instead of dumped as text.
+HTML_MACROS = frozenset({"html", "html-secure"})
+
+# Elements whose text content is code for the browser, never page content.
+SKIPPED_ELEMENTS = frozenset({"style", "script"})
+
 INLINE_WRAPPERS = {
     "strong": "**", "b": "**",
     "em": "*", "i": "*",
@@ -132,6 +140,10 @@ class StorageConverter(HTMLParser):
         self._link_title: str = ""
         self._param_name: str | None = None
         self._task_complete = False
+        self._cell_depth = 0                   # >0 → inside a table cell
+        # Per open inline wrapper (strong, em, …): the sink depth it pushed,
+        # or None when it didn't (inside <pre>).
+        self._inline_stack: list[int | None] = []
 
         self.unknown_macros: set[str] = set()
         self.dropped_macros: set[str] = set()
@@ -178,9 +190,14 @@ class StorageConverter(HTMLParser):
                 self._skip_depth += 1
             return
 
+        if tag in SKIPPED_ELEMENTS:
+            self._skip_depth = 1
+            self._skip_tag = tag
+            return
+
         if tag in HEADINGS:
             self._break()
-            self._write(HEADINGS[tag] + " ")
+            self._push()
             return
 
         if tag == "p":
@@ -200,7 +217,13 @@ class StorageConverter(HTMLParser):
             return
 
         if tag in INLINE_WRAPPERS:
-            self._write(INLINE_WRAPPERS[tag])
+            # Markers are applied on close, once the content is known — see
+            # _close_inline. Inside <pre> they'd be literal text, so skip.
+            if self._pre_depth:
+                self._inline_stack.append(None)
+            else:
+                self._push()
+                self._inline_stack.append(len(self._sinks))
             return
 
         if tag in ("sup", "sub"):
@@ -241,6 +264,7 @@ class StorageConverter(HTMLParser):
 
         if tag in ("td", "th") and self._tables:
             self._tables[-1].header_seen |= (tag == "th")
+            self._cell_depth += 1
             self._push()
             return
 
@@ -351,7 +375,7 @@ class StorageConverter(HTMLParser):
             return
 
         if tag in HEADINGS:
-            self._break()
+            self._close_heading(tag)
             return
 
         if tag == "p":
@@ -359,7 +383,7 @@ class StorageConverter(HTMLParser):
             return
 
         if tag in INLINE_WRAPPERS:
-            self._write(INLINE_WRAPPERS[tag])
+            self._close_inline(tag)
             return
 
         if tag in ("sup", "sub"):
@@ -402,6 +426,7 @@ class StorageConverter(HTMLParser):
             return
 
         if tag in ("td", "th") and self._tables:
+            self._cell_depth = max(0, self._cell_depth - 1)
             self._tables[-1].add_cell(self._pop())
             return
 
@@ -467,7 +492,8 @@ class StorageConverter(HTMLParser):
         # Collapse runs of whitespace — storage format is pretty-printed XHTML
         # and the newlines in it are not content.
         text = re.sub(r"\s+", " ", data)
-        if text.strip() == "" and not self._sinks[-1]:
+        in_inline_sink = bool(self._inline_stack) and self._inline_stack[-1] == len(self._sinks)
+        if text.strip() == "" and not self._sinks[-1] and not in_inline_sink:
             return
         self._write(text)
 
@@ -505,6 +531,47 @@ class StorageConverter(HTMLParser):
         pad = " " * len(marker)
         rendered.extend(pad + line if line.strip() else "" for line in lines[1:])
         self._write("\n" + "\n".join(rendered))
+
+    def _close_heading(self, tag: str) -> None:
+        """Emit a heading once its text is known.
+
+        Empty headings (Confluence leaves ``<h4><br/></h4>`` behind freely)
+        vanish instead of becoming a bare ``####``. Inside a table cell a
+        heading can't exist in Markdown — ``| #### Date: |`` renders the
+        hashes literally — so it becomes bold text instead.
+        """
+        text = re.sub(r"\s+", " ", self._pop()).strip()
+        if not text:
+            self._break()
+            return
+        if self._cell_depth:
+            already_bold = text.startswith("**") and text.endswith("**")
+            self._write(text if already_bold else f"**{text}**")
+        else:
+            self._write(f"{HEADINGS[tag]} {text}")
+        self._break()
+
+    def _close_inline(self, tag: str) -> None:
+        """Wrap an inline run in its Markdown markers.
+
+        Whitespace at the edges is moved outside the markers: Confluence
+        happily bolds "The Coordinator " including the trailing space, but
+        ``**The Coordinator **ensures`` isn't bold in Markdown — a closing
+        ``**`` must not follow whitespace.
+        """
+        pushed = self._inline_stack.pop() if self._inline_stack else None
+        if pushed is None:
+            return
+        inner = self._pop()
+        core = inner.strip()
+        if not core:
+            if inner:
+                self._write(" ")
+            return
+        lead = inner[: len(inner) - len(inner.lstrip())]
+        trail = inner[len(inner.rstrip()):]
+        marker = INLINE_WRAPPERS[tag]
+        self._write(f"{lead}{marker}{core}{marker}{trail}")
 
     def _close_link(self) -> None:
         text = self._pop().strip()
@@ -556,11 +623,33 @@ class StorageConverter(HTMLParser):
             self._break()
             return
 
+        if name in HTML_MACROS:
+            inner = convert_storage(
+                macro.body,
+                self._link_resolver,
+                self._attachment_resolver,
+                self._attachment_link_resolver,
+            )
+            self.attachments |= inner.attachments
+            self.unknown_macros |= inner.unknown_macros
+            if inner.markdown.strip():
+                self._break()
+                self._write(inner.markdown)
+                self._break()
+            return
+
         if name in ADMONITION_MACROS:
-            label = macro.params.get("title") or ADMONITION_MACROS[name]
+            # A panel's generic "Panel" label is noise; the typed admonitions
+            # (Info, Warning, …) keep theirs because it carries meaning.
+            label = macro.params.get("title") or (
+                "" if name == "panel" else ADMONITION_MACROS[name]
+            )
             body = _normalise(macro.body).strip()
             self._break()
-            block = f"**{label}**" + (f"\n\n{body}" if body else "")
+            parts = [p for p in (f"**{label}**" if label else "", body) if p]
+            block = "\n\n".join(parts)
+            if not block:
+                return
             self._write(_prefix_lines(block, "> "))
             self._break()
             return
