@@ -303,7 +303,7 @@ the first export). The directory is also where
 | **Format** | Markdown | `md` converts the page's storage format locally. `pdf` asks Confluence for its own render (higher fidelity, but many instances have the endpoint disabled). `both` writes one of each. |
 | **Overwrite existing files** | on | Off makes a re-run fail on pages already written, rather than replacing them. |
 | **Skip unchanged pages** | off | Compares each page's timestamp against `.l33ch-state.json` and skips matches. This is what makes a repeat run cheap. |
-| **Mirror page hierarchy as folders** | off | Recreates the parent/child structure as directories instead of writing every page side by side. A page with subpages is written inside its folder as `<folder>_page.md`. Intra-export links are rewritten as relative paths either way. |
+| **Mirror page hierarchy as folders** | off | Recreates the parent/child structure as directories instead of writing every page side by side. A page with subpages is written inside its folder as `<folder>.md`. Intra-export links are rewritten as relative paths either way. |
 | **Write YAML front matter** | off | Prepends title, page ID, space, source URL, version and last-modified stamp, so every file traces back to the page it came from. |
 | **Rewrite wiki links to local files** | on | Links between exported pages point at the sibling `.md`. Links out of the export fall back to **Link to pages outside the export** below. |
 | **Link to pages outside the export** | on | A link to a page not in this export (a different space, or one you didn't select) points at its live Confluence URL, which needs a logged-in browser session to open. Off renders it as plain text instead — useful for an export you'll share with someone without access, or read offline. |
@@ -369,14 +369,14 @@ Mirrored (**Mirror page hierarchy** on):
   README.md
   l33ch-log.txt
   Product Docs/
-    Product Docs_page.md
+    Product Docs.md
     Getting Started/
-      Getting Started_page.md
+      Getting Started.md
       Install_102.md
 ```
 
 A page that has subpages becomes a folder, and its own content is written
-inside that folder as `<folder>_page.md` (no page ID — the folder already
+inside that folder as `<folder>.md` (no page ID — the folder already
 makes the name unique), so each folder is self-contained. Pages without
 subpages keep the normal filename scheme below.
 

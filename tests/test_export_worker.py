@@ -206,11 +206,11 @@ def test_mirrored_layout_creates_folders(tmp_path):
     ]
     _run(tmp_path, pages=pages, mirror_tree=True)
     # A page with subpages is written inside the folder it became.
-    assert (tmp_path / "Alpha" / "Alpha_page.md").is_file()
+    assert (tmp_path / "Alpha" / "Alpha.md").is_file()
     assert not (tmp_path / "Alpha_1.md").exists()
     assert (tmp_path / "Alpha" / "Beta_2.md").is_file()
     # The link from Alpha to its subpage is relative, side by side.
-    text = (tmp_path / "Alpha" / "Alpha_page.md").read_text(encoding="utf-8")
+    text = (tmp_path / "Alpha" / "Alpha.md").read_text(encoding="utf-8")
     assert "(Beta_2.md)" in text
 
 

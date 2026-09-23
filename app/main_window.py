@@ -718,7 +718,7 @@ class MainWindow(QMainWindow):
             "Recreate the parent/child structure as directories under the\n"
             "output folder, instead of writing every page side by side.\n"
             "A page with subpages is saved inside its folder as\n"
-            "<folder>_page.md."
+            "<folder>.md."
         )
         self.front_matter_check = QCheckBox("Write YAML front matter")
         self.front_matter_check.setChecked(False)

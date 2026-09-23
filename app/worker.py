@@ -131,7 +131,7 @@ class ExportWorker(QObject):
         # Every ancestor-title prefix some page in this run sits under, i.e.
         # every folder the mirrored layout creates. A page whose own
         # (ancestors + title) is in here has subpages, so in the mirrored
-        # layout it's written *inside* its folder as ``<folder>_page.md``.
+        # layout it's written *inside* its folder as ``<folder>.md``.
         self._folder_chains: set[tuple[str, ...]] = {
             page.ancestor_titles[:n]
             for page in pages
@@ -178,7 +178,13 @@ class ExportWorker(QObject):
         counts: dict[tuple[Path, str], int] = {}
         stems: dict[str, str] = {}
         for page in self._pages:
-            key = (self._relative_dir(page), sanitize_filename(page.title))
+            title = sanitize_filename(page.title)
+            folder = self._relative_dir(page)
+            if self._is_folder_page(page):
+                # Claims ``<folder>/<folder>.md`` so a same-titled subpage
+                # inside it gets the " (2)" suffix instead of overwriting it.
+                folder = folder / title
+            key = (folder, title)
             counts[key] = counts.get(key, 0) + 1
             n = counts[key]
             stems[page.id] = key[1] if n == 1 else f"{key[1]} ({n})"
@@ -187,14 +193,14 @@ class ExportWorker(QObject):
     def _destination(self, page: PageRef, suffix: str) -> Path:
         if self._is_folder_page(page):
             # A page with subpages lives inside the folder it became, so the
-            # folder is self-contained: ``Docs/Docs_page.md`` beside its
-            # children rather than ``Docs_123.md`` one level up.
+            # folder is self-contained: ``Docs/Docs.md`` beside its children
+            # rather than ``Docs_123.md`` one level up.
             folder = sanitize_filename(page.title)
             return (
                 self._options.output_dir
                 / self._relative_dir(page)
                 / folder
-                / f"{folder}_page{suffix}"
+                / f"{folder}{suffix}"
             )
         if self._options.include_page_id:
             stem = f"{sanitize_filename(page.title)}_{page.id}"

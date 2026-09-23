@@ -56,11 +56,21 @@ def test_mirror_layout_puts_parent_page_inside_its_folder(tmp_path):
     child = PageRef(id="9", title="Child", ancestor_titles=("Top", "Middle"))
     worker = _worker(tmp_path, [parent, child], mirror_tree=True)
     assert worker._destination(parent, ".md") == (
-        tmp_path / "Top" / "Middle" / "Middle_page.md"
+        tmp_path / "Top" / "Middle" / "Middle.md"
     )
     assert worker._destination(child, ".md") == (
         tmp_path / "Top" / "Middle" / "Child_9.md"
     )
+
+
+def test_subpage_named_like_its_parent_folder_is_disambiguated(tmp_path):
+    parent = PageRef(id="8", title="Docs")
+    child = PageRef(id="9", title="Docs", ancestor_titles=("Docs",))
+    worker = _worker(
+        tmp_path, [parent, child], mirror_tree=True, include_page_id=False
+    )
+    assert worker._destination(parent, ".md") == tmp_path / "Docs" / "Docs.md"
+    assert worker._destination(child, ".md") == tmp_path / "Docs" / "Docs (2).md"
 
 
 def test_parent_page_stays_flat_without_mirror_layout(tmp_path):
