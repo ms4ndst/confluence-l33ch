@@ -302,7 +302,7 @@ the first export). The directory is also where
 | --- | --- | --- |
 | **Format** | Markdown | `md` converts the page's storage format locally. `pdf` asks Confluence for its own render (higher fidelity, but many instances have the endpoint disabled). `both` writes one of each. |
 | **Overwrite existing files** | on | Off makes a re-run fail on pages already written, rather than replacing them. |
-| **Skip unchanged pages** | off | Compares each page's timestamp against `.l33ch-state.json` and skips matches. This is what makes a repeat run cheap. |
+| **Skip unchanged pages** | off | Compares each page's timestamp against `.l33ch-state.json` and skips matches. This is what makes a repeat run cheap. It only looks at timestamps — see [`.l33ch-state.json`](#l33ch-statejson) for what it does *not* notice. |
 | **Mirror page hierarchy as folders** | off | Recreates the parent/child structure as directories instead of writing every page side by side. A page with subpages is written inside its folder as `<folder>.md`. Intra-export links are rewritten as relative paths either way. |
 | **Write YAML front matter** | off | Prepends title, page ID, space, source URL, version and last-modified stamp, so every file traces back to the page it came from. |
 | **Rewrite wiki links to local files** | on | Links between exported pages point at the sibling `.md`. Links out of the export fall back to **Link to pages outside the export** below. |
@@ -334,8 +334,23 @@ A blank page with **no** subpages is reported the same way, as a trailing
 returns such a page normally with an empty body; a page the account isn't
 allowed to read comes back as an HTTP 403/404 instead and *is* counted as
 failed. Each blank page is named in the log as
-`= Blank page (empty in Confluence), skipped: <title>`. Tick **Create files
-for blank pages** to write a placeholder file for them instead.
+`= Blank page (empty in Confluence), skipped: <title>`.
+
+Tick **Create files for blank pages** to write a placeholder file for them
+instead. The log then shows `-> <path> (placeholder)` for each one, a
+`Wrote N placeholder file(s) for blank pages.` note at the end, and the
+summary reads `B blank page(s) written as placeholders.` A placeholder looks
+like this:
+
+```markdown
+# AB Example - Migrerat till Edge
+
+_This page is empty in Confluence._
+
+Source: https://confluence.example.com/pages/viewpage.action?pageId=553437748
+```
+
+Placeholders are Markdown-only; a PDF-only run still skips blank pages.
 
 Closing the window cancels any running work and waits up to five seconds for
 the threads to stop before exiting.
@@ -388,7 +403,16 @@ Mirrored (**Mirror page hierarchy** on):
 A page that has subpages becomes a folder, and its own content is written
 inside that folder as `<folder>.md` (no page ID — the folder already
 makes the name unique), so each folder is self-contained. Pages without
-subpages keep the normal filename scheme below.
+subpages keep the normal filename scheme below. If a subpage has the same
+title as its parent folder, it gets a ` (2)` suffix rather than overwriting
+the parent's file.
+
+A *blank* page with subpages still becomes its folder, but gets no
+`<folder>.md` unless **Create files for blank pages** is on.
+
+Switching layout or naming options (mirroring, page IDs in filenames) on an
+existing output folder doesn't remove the files written under the old
+names — export into a fresh folder, or clean up the old files afterwards.
 
 `l33ch-log.txt` always sits at the output root (never inside a mirrored
 subfolder) — see [`l33ch-log.txt`](#l33ch-logtxt) below.
@@ -473,14 +497,17 @@ downgraded to single quotes so the YAML scalar stays valid.
 
 42 page(s) exported by confluence-l33ch 0.1.0 on 2025-01-02T03:04+01:00.
 
-- [Product Docs](Product%20Docs_100.md)
-  - [Getting Started](Product%20Docs/Getting%20Started_101.md)
+- [Product Docs](Product%20Docs/Product%20Docs.md)
+  - [Getting Started](Product%20Docs/Getting%20Started/Getting%20Started.md)
     - [Install](Product%20Docs/Getting%20Started/Install_102.md)
 ```
 
+(That's the mirrored layout; flat runs link `Product%20Docs_100.md` etc.)
 Indentation follows each page's depth, and paths are URL-encoded so spaces
 don't break the links. It is only written for Markdown runs — a PDF-only
-export has nothing to index.
+export has nothing to index. Every discovered page is listed, so an entry
+for a blank page points at a file that only exists with **Create files for
+blank pages** on.
 
 ### `.l33ch-state.json`
 
@@ -498,6 +525,22 @@ export has nothing to index.
 that is what **Skip unchanged pages** compares against. `last_sync` is what
 **Only pages changed since last sync** feeds into the space listing. Delete the
 file to force a full re-export.
+
+With **Skip unchanged pages** on, a page is skipped (`= Unchanged, skipped:
+<title>` in the log) when its current Confluence timestamp equals the one
+stored here. Things it does **not** notice:
+
+* **Local changes.** A deleted or edited `.md` isn't rewritten, and neither is
+  a page whose filename would change because you switched an option such as
+  mirroring, page IDs in filenames or blank-page placeholders. Untick the
+  option (or delete this file) for the first run after such a change.
+* **Changes that don't bump the page's timestamp** — depending on the
+  instance, uploading or replacing an attachment may be one.
+* **Pages deleted in Confluence.** Their local files are left in place.
+
+Only pages that exported successfully are recorded, so blank, organizational
+and failed pages are fetched again on every run (which also means failures
+are retried). A page without a timestamp is never skipped.
 
 ### `l33ch-log.txt`
 
@@ -624,6 +667,13 @@ corresponding field is blank:
   that is what the storage format records. Titles are unique per space, so this
   is sound within one space, but a link into a *different* space keeps its
   Confluence URL rather than resolving locally.
+* **Stale files are never removed.** Pages deleted or renamed in Confluence,
+  and files written under an older layout or naming option, stay in the
+  output folder until you delete them.
+* **Discovery shows no progress within a batch.** Pages are listed 50 at a
+  time and a log line appears only when a batch arrives, so a slow server
+  looks idle between lines. Each request times out after 30 seconds without
+  data.
 * **No embedded browser.** Removed after it proved able to take the process
   down on hardware whose Direct3D device gets removed; see the cookie section.
 
@@ -687,12 +737,13 @@ py -m pip install pytest
 py -m pytest tests -q
 ```
 
-147 tests cover the storage converter (every construct, plus malformed markup),
+152 tests cover the storage converter (every construct, plus malformed markup),
 the client's header building and ancestry→depth maths, cURL/header paste
 parsing and the probe URL, scope resolution and its error paths, the export
 worker's filename/link/front-matter logic (including the central image/file
 download paths), a full export run against a stubbed REST client (formats,
-incremental skip, mirrored layout, cancellation), and
+incremental skip, mirrored layout, blank-page handling and placeholders,
+cancellation), and
 settings persistence, and worker-thread ownership. The thread tests abort the run rather than fail an
 assertion if they regress — that is the nature of the bug they guard.
 
@@ -713,6 +764,10 @@ Live HTTP is not exercised; **Test connection** is the manual equivalent.
 | `QThread: Destroyed while thread '' is still running` | Fixed: threads and their workers are owned centrally in `worker.py` instead of by whichever handler cleared its reference first. A recurrence would be a regression in `run_in_thread` — `tests/test_thread_lifecycle.py` guards it. |
 | Cookie imported, then 401 a minute later | Some gateways issue a short-lived session, or the instance invalidated it. Re-import via **Paste from browser…**; if it keeps happening, a PAT is the more durable credential. |
 | Every PDF export fails | The instance has PDF export disabled. Export Markdown and use **Convert MD to PDF**. |
+| *"N blank page(s) skipped"* in the summary | Not errors: those pages are empty in Confluence and have no subpages (often emptied after a migration). They're listed in the log as `= Blank page (empty in Confluence)`. Tick **Create files for blank pages** to get a placeholder file for each. |
+| Discovery seems to hang | Pages are listed 50 per request and the log only updates when a batch arrives, so a slow server looks frozen between lines. A request with no data for 30 s fails with *"Could not reach …"*; a stalled VPN or DNS lookup can take longer than that. Check **Test connection**, and remember that credentials aren't kept across restarts unless **Remember credentials** is ticked. |
+| Old files (e.g. `Title_123.md` beside a folder, or `*_page.md`) remain after re-exporting | Written by an earlier run with a different layout or naming. The app never deletes files; export into a fresh folder or remove them, e.g. `find <output> -name '*_page.md'`. |
+| Changed an option but unchanged pages keep their old filenames | **Skip unchanged pages** only compares timestamps. Untick it, or delete `.l33ch-state.json`, for one run. |
 | Pages export but are nearly empty | The account can list the page but not read its body — a permission problem, not a converter bug. |
 | `wkhtmltopdf not found` | Install it (`apt install wkhtmltopdf` on Linux, the installer from wkhtmltopdf.org on Windows) and either add its `bin`/install folder to PATH or point the field at the binary directly. |
 | App won't start on Linux: missing `xcb`/`libGL` etc. | Install the Qt platform-plugin system libraries — see *Install* above (`libxcb-cursor0 libxkbcommon-x11-0 libgl1` on Debian/Ubuntu). |
