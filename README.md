@@ -1,8 +1,9 @@
 # Confluence L33ch — Catppuccin
 ![screenshot](screenshot.png)
 A desktop GUI — **Windows and Linux** — that pulls Confluence Server / Data
-Center content down to local Markdown or PDF — a whole space, or one page and
-everything beneath it — as a single self-contained PySide6 application.
+Center content down to local Markdown or PDF — one or several whole spaces,
+or one page and everything beneath it — as a single self-contained PySide6
+application.
 
 What it does:
 
@@ -721,10 +722,11 @@ corresponding field is blank:
 * **A cookie is a poor credential for a scheduled run.** Sessions expire, and a
   **Repeat every** cycle will start failing silently mid-schedule. Use a PAT if
   you want unattended runs.
-* **Page titles are the link key.** Intra-wiki links resolve by title because
-  that is what the storage format records. Titles are unique per space, so this
-  is sound within one space, but a link into a *different* space keeps its
-  Confluence URL rather than resolving locally.
+* **Page titles are the link key.** Intra-wiki links resolve by space +
+  title because that is what the storage format records. Titles are unique
+  per space, so this is sound; a link into another space resolves locally
+  only when that space is part of the same export, and otherwise keeps its
+  Confluence URL.
 * **Stale files are never removed.** Pages deleted or renamed in Confluence,
   and files written under an older layout or naming option, stay in the
   output folder until you delete them.
@@ -756,7 +758,7 @@ tests/
   test_thread_lifecycle.py    worker-thread ownership regressions
   test_config.py              settings persistence, atomic writes
   test_confluence_client.py   header building, ancestry → depth, PDF URLs
-  test_discovery.py           subtree vs space scope, error propagation
+  test_discovery.py           subtree vs space vs multi-space scope, errors
   test_export_worker.py       full run against a stubbed client
   test_storage_converter.py   every storage-format construct
   test_worker_paths.py        filenames, mirrored layout, link rewriting
