@@ -27,7 +27,7 @@ import base64
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Iterator
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -136,6 +136,23 @@ class WhoAmI:
 CancelCheck = Callable[[], bool]
 
 
+def _redirect_chain(resp: Any) -> str:
+    """Describe the redirects that led to ``resp``, for diagnosing SSO bounces.
+
+    Query strings are dropped: SAML / OAuth hops carry request tokens there,
+    and the host + path is what tells you which hop rejected the cookie.
+    """
+    history = list(getattr(resp, "history", None) or [])
+    if not history:
+        return "No redirect was followed; the server answered with HTML directly. "
+    hops = [
+        f"{r.status_code} {urlsplit(r.url)._replace(query='', fragment='').geturl()}"
+        for r in history
+    ]
+    final = urlsplit(resp.url)._replace(query="", fragment="").geturl()
+    return f"Redirects: {' -> '.join(hops)} -> {final}. "
+
+
 class ConfluenceClient:
     """Thin, synchronous REST wrapper. Safe to use from a worker thread."""
 
@@ -145,6 +162,19 @@ class ConfluenceClient:
         # One session per client so keep-alive is reused across the hundreds
         # of requests a subtree export makes.
         self._session = requests.Session()
+        # The cookie goes in the session's jar, scoped to the Confluence host,
+        # rather than a hand-set `Cookie` header: requests drops a manual
+        # Cookie header on *every* redirect, even a same-host one, so an SSO
+        # hop through e.g. /plugins/servlet/samlsso arrives cookieless and
+        # bounces to the identity provider. The jar survives same-host
+        # redirects and never leaks the cookie to a third-party host.
+        host = urlsplit(creds.base_url).hostname or ""
+        for part in creds.cookie.split(";"):
+            name, sep, value = part.strip().partition("=")
+            if sep and name.strip() and host:
+                self._session.cookies.set(
+                    name.strip(), value.strip(), domain=host, path="/"
+                )
 
     # --- plumbing ------------------------------------------------------
 
@@ -153,8 +183,6 @@ class ConfluenceClient:
             "Accept": accept,
             "User-Agent": self.creds.user_agent or USER_AGENT,
         }
-        if self.creds.cookie:
-            headers["Cookie"] = self.creds.cookie
         if self.creds.pat:
             if self.creds.auth_mode == "basic" and self.creds.username:
                 raw = f"{self.creds.username}:{self.creds.pat}".encode("utf-8")
@@ -197,7 +225,8 @@ class ConfluenceClient:
                 f"Expected JSON from {url} but got '{ctype or 'no content-type'}'. "
                 "This is what an SSO login redirect looks like — paste a browser "
                 "session cookie into the Cookie field, or check the API path. "
-                f"Body starts: {snippet}"
+                + _redirect_chain(resp)
+                + f"Body starts: {snippet}"
             )
         try:
             return resp.json()

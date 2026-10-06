@@ -62,7 +62,9 @@ CODE_MACROS = frozenset({"code", "noformat"})
 HTML_MACROS = frozenset({"html", "html-secure"})
 
 # Elements whose text content is code for the browser, never page content.
-SKIPPED_ELEMENTS = frozenset({"style", "script"})
+# ``ac:task-id`` / ``ac:task-uuid`` hold Confluence's internal task numbering,
+# which would otherwise leak into the output as "- [x] 38 Remove …".
+SKIPPED_ELEMENTS = frozenset({"style", "script", "ac:task-id", "ac:task-uuid"})
 
 INLINE_WRAPPERS = {
     "strong": "**", "b": "**",

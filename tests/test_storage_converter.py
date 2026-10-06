@@ -187,6 +187,21 @@ def test_task_list_checkboxes():
     assert out == "- [x] done thing\n- [ ] todo thing"
 
 
+def test_task_list_omits_internal_task_ids():
+    out = md(
+        "<ac:task-list>"
+        "<ac:task><ac:task-id>38</ac:task-id>"
+        "<ac:task-uuid>3f2a-11</ac:task-uuid>"
+        "<ac:task-status>complete</ac:task-status>"
+        "<ac:task-body>for SSO - remove from intune</ac:task-body></ac:task>"
+        "<ac:task><ac:task-id>7</ac:task-id>"
+        "<ac:task-status>incomplete</ac:task-status>"
+        "<ac:task-body>Delete the Storage Accounts</ac:task-body></ac:task>"
+        "</ac:task-list>"
+    )
+    assert out == "- [x] for SSO - remove from intune\n- [ ] Delete the Storage Accounts"
+
+
 def test_blockquote():
     out = md("<blockquote><p>Quoted.</p></blockquote>")
     assert out == "> Quoted."

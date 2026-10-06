@@ -275,9 +275,8 @@ Two modes:
   `.l33ch-state.json`.
 * **Several spaces** — enter the keys in **Space key** separated by commas,
   e.g. `VSA, CEPL, HR`, and leave the top-page fields blank. Each space is
-  scanned in turn (the log shows `Space CEPL:` and a per-space count), and in
-  the output every space gets its own folder — see [Output
-  layout](#output-layout). Spaces and whitespace around the commas are
+  scanned in turn (the log shows `Space CEPL:` and a per-space count), and
+  all spaces share the output folder — see [Output layout](#output-layout). Spaces and whitespace around the commas are
   ignored and a repeated key is scanned once. A top page only works with a
   single space key; with several, discovery refuses to start.
 
@@ -427,24 +426,28 @@ Switching layout or naming options (mirroring, page IDs in filenames) on an
 existing output folder doesn't remove the files written under the old
 names — export into a fresh folder, or clean up the old files afterwards.
 
-Several spaces (**Space key** `VSA, CEPL`): one top-level folder per space,
-named by its key, with the flat or mirrored layout inside each. Page titles
-are only unique within a space, so this keeps same-titled pages in different
-spaces apart:
+Several spaces (**Space key** `VSA, CEPL`) share the output folder — there
+is no extra folder per space. In the mirrored layout each space's home page
+is already its top folder (`Visma Software AB Home/`, `Visma Control Product
+Line Home/`, …), so the spaces end up side by side:
 
 ```text
 <output>/
   README.md
-  VSA/
-    Product Docs/
-      Product Docs.md
-  CEPL/
-    Product Docs_5501.md
+  Visma Software AB Home/
+    Visma Software AB Home.md
+    …
+  Visma Control Product Line Home/
+    Visma Control Product Line Home.md
+    …
 ```
 
-Links between pages resolve within the linking page's space, and a link into
-another exported space points across folders (`../CEPL/…`). The index
-`README.md` gets one `## <space>` section per space.
+Links between pages resolve within the linking page's own space, so a
+same-titled page in another space is never picked by mistake, and a link into
+another exported space points at that space's file. Two pages from different
+spaces that would land on the same filename get a ` (2)` suffix (with page
+IDs in filenames off), like any other collision. The index `README.md` gets
+one `## <space key>` section per space.
 
 `l33ch-log.txt` always sits at the output root (never inside a mirrored
 subfolder) — see [`l33ch-log.txt`](#l33ch-logtxt) below.

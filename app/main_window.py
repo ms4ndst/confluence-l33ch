@@ -593,7 +593,7 @@ class MainWindow(QMainWindow):
             "Confluence space key — the short upper-case code in a page URL,\n"
             "e.g. the DOCS in /display/DOCS/Some+Page.\n"
             "Separate several keys with commas to export several spaces in\n"
-            "one run; each space then gets its own folder in the output."
+            "one run (not together with a top page)."
         )
         form.addRow("Space key:", self.space_edit)
 

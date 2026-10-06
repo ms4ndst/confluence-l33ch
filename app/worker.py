@@ -146,9 +146,9 @@ class ExportWorker(QObject):
         self._pages = pages
         self._credentials = credentials
         self._space_key = space_key
-        # The Space key field may list several spaces ("VSA, CEPL"). With more
-        # than one, every space gets its own top-level folder: titles are only
-        # unique *within* a space, so two spaces side by side would collide.
+        # The Space key field may list several spaces ("VSA, CEPL"). They share
+        # the output folder — in the mirrored layout each space's home page is
+        # already its own top folder — and links resolve per space.
         self._space_keys = parse_space_keys(space_key)
         self._multi_space = len(self._space_keys) > 1
         self._options = options
@@ -189,15 +189,10 @@ class ExportWorker(QObject):
             return page.space_key
         return self._space_keys[0] if len(self._space_keys) == 1 else ""
 
-    def _space_dir(self, page: PageRef) -> Path:
-        if not self._multi_space:
-            return Path()
-        return Path(sanitize_filename(self._space_of(page) or "unknown-space"))
-
-    def _sibling_group(self, space: str, parents: tuple[str, ...]) -> tuple[str, ...]:
-        """The folder a name lands in: its space plus ancestor chain when
-        mirroring, otherwise the space's top folder for everything."""
-        return (space, *parents) if self._options.mirror_tree else (space,)
+    def _sibling_group(self, parents: tuple[str, ...]) -> tuple[str, ...]:
+        """The folder a name lands in: its ancestor chain when mirroring,
+        otherwise the output root for everything."""
+        return parents if self._options.mirror_tree else ()
 
     def _compute_pad_widths(self) -> dict[tuple[str, ...], int]:
         """Widest leading number among the names sharing each folder.
@@ -215,12 +210,11 @@ class ExportWorker(QObject):
             return widths
         names: set[tuple[tuple[str, ...], str]] = set()
         for page in self._pages:
-            space = self._space_of(page)
             chain = page.ancestor_titles
-            names.add((self._sibling_group(space, chain), page.title))
+            names.add((self._sibling_group(chain), page.title))
             if self._options.mirror_tree:
                 for n in range(len(chain)):
-                    names.add(((space, *chain[:n]), chain[n]))
+                    names.add((chain[:n], chain[n]))
         for group, title in names:
             name = sanitize_filename(title)
             if _LEADING_DATE.match(name):
@@ -230,10 +224,10 @@ class ExportWorker(QObject):
                 widths[group] = max(widths.get(group, 0), len(match.group()))
         return widths
 
-    def _name(self, space: str, parents: tuple[str, ...], title: str) -> str:
+    def _name(self, parents: tuple[str, ...], title: str) -> str:
         """Filesystem name for ``title`` inside the folder of ``parents``."""
         name = sanitize_filename(title)
-        width = self._pad_widths.get(self._sibling_group(space, parents))
+        width = self._pad_widths.get(self._sibling_group(parents))
         if width:
             match = _LEADING_NUMBER.match(name)
             if match:
@@ -241,17 +235,13 @@ class ExportWorker(QObject):
         return name
 
     def _relative_dir(self, page: PageRef) -> Path:
-        space_dir = self._space_dir(page)
         if not self._options.mirror_tree:
-            return space_dir
-        space = self._space_of(page)
+            return Path()
         chain = page.ancestor_titles
-        return space_dir.joinpath(
-            *[self._name(space, chain[:n], t) for n, t in enumerate(chain)]
-        )
+        return Path(*[self._name(chain[:n], t) for n, t in enumerate(chain)])
 
     def _page_name(self, page: PageRef) -> str:
-        return self._name(self._space_of(page), page.ancestor_titles, page.title)
+        return self._name(page.ancestor_titles, page.title)
 
     def _is_folder_page(self, page: PageRef) -> bool:
         """Whether the mirrored layout turns this page into a folder."""

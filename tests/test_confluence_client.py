@@ -39,8 +39,76 @@ def test_basic_falls_back_to_bearer_without_a_username():
     assert _headers(creds)["Authorization"] == "Bearer tok"
 
 
-def test_cookie_is_sent_as_a_header():
-    assert _headers(Credentials(cookie="a=1"))["Cookie"] == "a=1"
+def test_cookie_goes_in_the_jar_scoped_to_the_confluence_host():
+    from app.confluence_client import ConfluenceClient
+
+    client = ConfluenceClient(Credentials(
+        base_url="https://wiki.example.com", cookie="a=1; JSESSIONID=abc==",
+    ))
+    jar = {(c.name, c.domain): c.value for c in client._session.cookies}
+    assert jar == {("a", "wiki.example.com"): "1",
+                   ("JSESSIONID", "wiki.example.com"): "abc=="}
+    # Not a hand-set header: requests strips those on every redirect.
+    assert "Cookie" not in client._headers()
+
+
+def test_cookie_survives_a_same_host_sso_redirect():
+    """Confluence → its own SAML servlet → JSON, as on an SSO instance.
+
+    With a manual Cookie header the second hop goes out cookieless and the
+    server bounces to the identity provider instead.
+    """
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from app.confluence_client import ConfluenceClient
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/rest/api/user/current"):
+                self.send_response(302)
+                self.send_header("Location", "/plugins/servlet/samlsso?x=1")
+                self.end_headers()
+                return
+            authed = "JSESSIONID=abc" in (self.headers.get("Cookie") or "")
+            body = (json.dumps({"displayName": "Me", "type": "known"})
+                    if authed else "<html>login</html>").encode()
+            self.send_response(200)
+            self.send_header("Content-Type",
+                             "application/json" if authed else "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        who = ConfluenceClient(
+            Credentials(base_url=base, cookie="JSESSIONID=abc"), timeout=5
+        ).whoami()
+    finally:
+        server.shutdown()
+    assert who.authenticated and who.display_name == "Me"
+
+
+def test_html_error_names_the_redirect_chain_without_query_strings():
+    from app.confluence_client import _redirect_chain
+
+    class R:
+        def __init__(self, url, status_code=302, history=()):
+            self.url, self.status_code, self.history = url, status_code, list(history)
+
+    hop = R("https://wiki.example.com/rest/api/user/current")
+    final = R("https://accounts.google.com/signin?SAMLRequest=secret", 200, [hop])
+    text = _redirect_chain(final)
+    assert "302 https://wiki.example.com/rest/api/user/current" in text
+    assert "https://accounts.google.com/signin" in text
+    assert "secret" not in text
 
 
 def test_no_authorization_header_without_a_pat():

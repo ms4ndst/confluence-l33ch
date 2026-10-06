@@ -389,25 +389,28 @@ def test_parse_space_keys():
     assert parse_space_keys("") == []
 
 
-def test_several_spaces_get_their_own_folders(tmp_path):
+def test_several_spaces_share_the_output_folder(tmp_path):
+    # No space-key folders: same-titled pages from two spaces are told apart
+    # the same way as any other same-titled pages.
     a = PageRef(id="1", title="Home", space_key="VSA")
     b = PageRef(id="2", title="Home", space_key="CEPL")
-    worker = _worker(tmp_path, [a, b], space_key="VSA, CEPL")
-    assert worker._destination(a, ".md") == tmp_path / "VSA" / "Home_1.md"
-    assert worker._destination(b, ".md") == tmp_path / "CEPL" / "Home_2.md"
+    worker = _worker(tmp_path, [a, b], space_key="VSA, CEPL", include_page_id=False)
+    assert worker._destination(a, ".md") == tmp_path / "Home.md"
+    assert worker._destination(b, ".md") == tmp_path / "Home (2).md"
 
 
-def test_several_spaces_mirrored_layout_is_per_space(tmp_path):
-    parent = PageRef(id="1", title="Docs", space_key="VSA")
-    child = PageRef(id="2", title="Intro", ancestor_titles=("Docs",), space_key="VSA")
-    # Same title in another space, without children: must not become a folder.
-    other = PageRef(id="3", title="Docs", space_key="CEPL")
+def test_several_spaces_mirrored_layout_uses_each_spaces_own_tree(tmp_path):
+    home = PageRef(id="1", title="VSA Home", space_key="VSA")
+    child = PageRef(id="2", title="Intro", ancestor_titles=("VSA Home",), space_key="VSA")
+    # Same title as VSA's folder page, in another space and without children
+    # there: must not be treated as a folder.
+    other = PageRef(id="3", title="VSA Home", space_key="CEPL")
     worker = _worker(
-        tmp_path, [parent, child, other], space_key="VSA, CEPL", mirror_tree=True
+        tmp_path, [home, child, other], space_key="VSA, CEPL", mirror_tree=True
     )
-    assert worker._destination(parent, ".md") == tmp_path / "VSA" / "Docs" / "Docs.md"
-    assert worker._destination(child, ".md") == tmp_path / "VSA" / "Docs" / "Intro_2.md"
-    assert worker._destination(other, ".md") == tmp_path / "CEPL" / "Docs_3.md"
+    assert worker._destination(home, ".md") == tmp_path / "VSA Home" / "VSA Home.md"
+    assert worker._destination(child, ".md") == tmp_path / "VSA Home" / "Intro_2.md"
+    assert worker._destination(other, ".md") == tmp_path / "VSA Home_3.md"
 
 
 def test_links_resolve_within_the_linking_pages_space(tmp_path):
@@ -417,4 +420,4 @@ def test_links_resolve_within_the_linking_pages_space(tmp_path):
     worker = _worker(tmp_path, [a1, b1, b2], space_key="VSA, CEPL")
     resolve = worker._link_resolver_for(a1, worker._build_link_index())
     assert resolve("Beta", "") == "Beta_2.md"
-    assert resolve("Beta", "CEPL") == "../CEPL/Beta_3.md"
+    assert resolve("Beta", "CEPL") == "Beta_3.md"
