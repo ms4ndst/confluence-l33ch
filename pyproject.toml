@@ -37,6 +37,12 @@ dependencies = [
 # itself (the "PDF" format asks the server for its own render), so it stays
 # optional — and wkhtmltopdf is a separate native install either way.
 pdf = ["markdown>=3.5", "pdfkit>=1.0"]
+# "Upload to Google Docs": mirrors the export into a Google Drive folder.
+gdrive = [
+    "markdown>=3.5",
+    "google-api-python-client>=2.100",
+    "google-auth-oauthlib>=1.2",
+]
 dev = ["pytest>=8"]
 
 [tool.pytest.ini_options]

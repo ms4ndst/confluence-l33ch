@@ -38,17 +38,51 @@ from PySide6.QtWidgets import (
 )
 
 
+# One quoted cURL argument. Quotes may be single (bash / Copy as cURL),
+# double (cmd.exe / "Copy as cURL (cmd)"), or bash's ANSI-C `$'…'`, which
+# Chrome switches to whenever a value contains `!`, `'` or a control
+# character — common in session tokens.
+_QUOTED_ARG = r"""(?:\$'(?P<ansi>(?:\\.|[^'\\])*)'|'(?P<sq>[^']*)'|"(?P<dq>[^"]*)")"""
+
 # `-H 'Cookie: …'` / `--header "Cookie: …"`, and curl's own cookie flags
-# `-b '…'` / `--cookie '…'`. Quotes may be single (bash / Copy as cURL) or
-# double (cmd.exe / "Copy as cURL (cmd)").
+# `-b '…'` / `--cookie '…'`.
 _HEADER_RE = re.compile(
-    r"""(?:-H|--header)\s+(['"])(?P<header>.*?)\1""",
-    re.IGNORECASE | re.DOTALL,
+    r"(?:-H|--header)\s+" + _QUOTED_ARG, re.IGNORECASE | re.DOTALL
 )
 _COOKIE_FLAG_RE = re.compile(
-    r"""(?:-b|--cookie)\s+(['"])(?P<value>.*?)\1""",
-    re.IGNORECASE | re.DOTALL,
+    r"(?:-b|--cookie)\s+" + _QUOTED_ARG, re.IGNORECASE | re.DOTALL
 )
+
+_ANSI_ESCAPE_RE = re.compile(
+    r"\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{4}|[0-7]{1,3}|.)", re.DOTALL
+)
+_ANSI_SIMPLE = {"n": "\n", "r": "\r", "t": "\t", "a": "\a", "b": "\b",
+                "f": "\f", "v": "\v", "e": "\x1b", "E": "\x1b"}
+
+# A cookie name is an RFC 6265 token: no whitespace, quotes or separators.
+# Checking it keeps a whole pasted command from passing as a cookie header.
+_COOKIE_NAME_RE = re.compile(r"""^[^\s=;,'"()<>@:\\/\[\]?{}]+$""")
+
+
+def _ansi_c_unquote(body: str) -> str:
+    """Decode the escapes inside a bash ``$'…'`` string."""
+    def repl(match: re.Match) -> str:
+        esc = match.group(1)
+        if esc[0] in "xu" and len(esc) > 1:
+            return chr(int(esc[1:], 16))
+        if esc[0] in "01234567":
+            return chr(int(esc, 8))
+        return _ANSI_SIMPLE.get(esc, esc)
+    return _ANSI_ESCAPE_RE.sub(repl, body)
+
+
+def _quoted_value(match: re.Match) -> str:
+    """The unquoted text of a :data:`_QUOTED_ARG` match."""
+    if match.group("ansi") is not None:
+        return _ansi_c_unquote(match.group("ansi"))
+    if match.group("sq") is not None:
+        return match.group("sq")
+    return match.group("dq")
 _URL_RE = re.compile(r"""['"]?(?P<url>https?://[^\s'"]+)""", re.IGNORECASE)
 
 _COOKIE_PREFIX_RE = re.compile(r"^\s*cookie\s*:\s*", re.IGNORECASE)
@@ -76,7 +110,13 @@ def _looks_like_cookies(value: str) -> bool:
     value = value.strip().strip(";")
     if "=" not in value:
         return False
-    return all("=" in part for part in value.split(";") if part.strip())
+    for part in value.split(";"):
+        if not part.strip():
+            continue
+        name, sep, _value = part.strip().partition("=")
+        if not sep or not _COOKIE_NAME_RE.match(name):
+            return False
+    return True
 
 
 def _base_url_from(url: str) -> str:
@@ -117,7 +157,7 @@ def parse_cookie_input(text: str) -> PastedCredentials:
     #    server sends `Vary: User-Agent`, and a gateway that ties a session to
     #    the UA that created it rejects the cookie under any other one.
     for match in _HEADER_RE.finditer(joined):
-        header = match.group("header")
+        header = _quoted_value(match)
         lowered = header.strip().lower()
         if lowered.startswith("cookie:") and not cookie:
             cookie = _COOKIE_PREFIX_RE.sub("", header).strip()
@@ -127,8 +167,8 @@ def parse_cookie_input(text: str) -> PastedCredentials:
     # 2. curl's dedicated cookie flag.
     if not cookie:
         flag = _COOKIE_FLAG_RE.search(joined)
-        if flag and _looks_like_cookies(flag.group("value")):
-            cookie = flag.group("value").strip()
+        if flag and _looks_like_cookies(_quoted_value(flag)):
+            cookie = _quoted_value(flag).strip()
 
     # 3. A bare header line, or just the value. Checked per line so a pasted
     #    block of headers still yields the right one.

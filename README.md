@@ -69,6 +69,12 @@ With the optional local Markdown→PDF support (`markdown` + `pdfkit`):
 python3 -m pip install ".[pdf]"    # py -m pip install ".[pdf]" on Windows
 ```
 
+With the optional **Upload to Google Docs** support:
+
+```bash
+python3 -m pip install ".[gdrive]"    # py -m pip install ".[gdrive]" on Windows
+```
+
 Or for development, without installing the package:
 
 ```bash
@@ -383,6 +389,54 @@ wkhtmltopdf. Use it when the server's own PDF export is disabled.
   before a batch whether the path is right.
 * Lookup order for the binary: the field, then `WKHTMLTOPDF_PATH`, then the
   default install locations for Windows/Linux/macOS, then `PATH`.
+
+### 6. Upload to Google Docs *(optional)*
+
+Mirrors the output directory into a Google Drive folder — in a Shared Drive
+or My Drive — as editable Google Docs. It runs against the local export, like
+**Convert MD to PDF**, so export as Markdown first. Nothing needs to be
+mounted locally, so it works the same on Linux.
+
+**One-time setup**
+
+1. Get an OAuth client file from IT: a **Desktop app** OAuth client in the
+   company's Google Cloud project, with the **Google Drive API** enabled and
+   the scope `https://www.googleapis.com/auth/drive`. (The narrower
+   `drive.file` scope can't see a folder someone else created.)
+2. Select it in **OAuth client**, then click **Sign in…**. Your browser opens
+   Google's consent page; approve, and the app stores a refresh token,
+   owner-only, as `google-token.json` next to the settings file. **Sign out**
+   deletes it.
+3. Open the destination folder in Drive and paste its address into **Google
+   Drive**. The signed-in account needs Contributor access or higher.
+
+**What an upload does**
+
+* Recreates the folder tree under the destination folder.
+* Turns every `.md` into a Google Doc named after the page title. Headings,
+  lists, tables, code and emphasis become Docs formatting; checkboxes become
+  ☑ / ☐ (Docs' HTML import has no checklist).
+* Embeds local images in the Doc. Images still pointing at Confluence can't
+  be fetched by Google and go missing — tick **Download images to a central
+  folder** before exporting. The log counts any that remain.
+* Points links between exported pages at the target Docs, and uploads
+  locally linked files (`files/…`) so their links work too. `README.md`
+  becomes a **README** Doc linking every page.
+
+**Re-uploading (Confluence stays the master)**
+
+Each item it creates is tagged in Drive with the Confluence page ID (from
+front matter or the `_<id>` filename suffix, else the relative path). A
+re-upload finds and **updates the same Doc in place**, keeping its URL,
+sharing and comments, and moves or renames it if the page moved or was
+renamed. Docs whose content hasn't changed are skipped, so **edits made in a
+Doc survive until that page changes in Confluence**. Then the Confluence
+version overwrites it, and earlier edits are only recoverable from the Doc's
+version history. Items it didn't create are never touched, and it never
+deletes anything: a page removed from Confluence leaves its Doc behind.
+
+Tick **Upload after each export** to chain it onto every export, including
+the runs started by **Repeat every**.
 
 ---
 
@@ -756,6 +810,7 @@ app/
   storage_converter.py  storage format → Markdown (html.parser)
   worker.py             export worker: paths, links, front matter, state, index
   md_to_pdf.py          local Markdown → PDF via markdown + pdfkit
+  gdrive.py             Google sign-in + mirror the export into Drive as Docs
 tests/
   test_cookie_import.py       cURL / header paste parsing, probe URL
   test_thread_lifecycle.py    worker-thread ownership regressions
@@ -765,6 +820,7 @@ tests/
   test_export_worker.py       full run against a stubbed client
   test_storage_converter.py   every storage-format construct
   test_worker_paths.py        filenames, mirrored layout, link rewriting
+  test_gdrive.py              Drive folder URLs, HTML rewriting, mirror vs a fake Drive
 ```
 
 Every long operation is a `QObject` worker with `progress` / `log` /

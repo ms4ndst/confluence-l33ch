@@ -7,3 +7,7 @@ requests>=2.31
 # the wkhtmltopdf native binary from https://wkhtmltopdf.org/downloads.html
 markdown>=3.5
 pdfkit>=1.0
+
+# Optional — only needed by "Upload to Google Docs"
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2

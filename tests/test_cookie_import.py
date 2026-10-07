@@ -62,6 +62,39 @@ def test_curl_cookie_flag_is_supported():
     assert result.cookie_header == "JSESSIONID=Q1"
 
 
+# Chrome's "Copy as cURL" switches to bash's $'…' quoting when a value
+# contains `!`, `'` or a control character.
+CURL_CHROME_ANSI = (
+    "curl 'https://confluence.example.com/rest/api/user/current' \\\n"
+    "  -H $'cookie: JSESSIONID=ABC123; tok=it\\'s!; b=\\u0041' \\\n"
+    "  -H 'user-agent: Mozilla/5.0 (Macintosh)'"
+)
+
+
+def test_chrome_ansi_c_quoted_cookie_header():
+    result = parse_cookie_input(CURL_CHROME_ANSI)
+    assert result.cookie_header == "JSESSIONID=ABC123; tok=it's!; b=A"
+    assert result.user_agent == "Mozilla/5.0 (Macintosh)"
+    assert result.base_url == "https://confluence.example.com"
+
+
+def test_chrome_ansi_c_quoted_cookie_flag():
+    result = parse_cookie_input(
+        "curl 'https://x.example.com/rest/api/user/current' "
+        "-b $'JSESSIONID=Q1; tok=a\\'b' -H 'user-agent: UA'"
+    )
+    assert result.cookie_header == "JSESSIONID=Q1; tok=a'b"
+
+
+def test_unparsed_curl_command_is_never_taken_as_the_cookie():
+    # A quoting style the parser doesn't know must yield nothing, not the
+    # whole command split on ';' — that "imports" a garbage cookie.
+    result = parse_cookie_input(
+        "curl 'https://x.example.com' -H %'cookie: a=1; b=2' -H 'x: y'"
+    )
+    assert not result.ok
+
+
 def test_trailing_semicolon_is_trimmed():
     assert parse_cookie_input("a=1; b=2;").cookie_header == "a=1; b=2"
 

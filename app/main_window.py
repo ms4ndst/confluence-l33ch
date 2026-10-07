@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -55,6 +56,13 @@ from .confluence_client import (
     parse_space_keys,
 )
 from .discovery import DiscoveryRequest, DiscoveryWorker
+from .gdrive import (
+    DriveUploadWorker,
+    SignInWorker,
+    parse_folder_id,
+    sign_out,
+    token_path,
+)
 from .md_to_pdf import MdToPdfWorker, wkhtmltopdf_version
 from .theme import (
     ACCENTS,
@@ -218,11 +226,19 @@ class MainWindow(QMainWindow):
         self._discovery_worker: DiscoveryWorker | None = None
         self._pdf_thread = None
         self._pdf_worker: MdToPdfWorker | None = None
+        self._gdrive_thread = None
+        self._gdrive_worker: DriveUploadWorker | None = None
+        self._signin_worker: SignInWorker | None = None
+        # True while an upload runs as the tail of an export, so its finish
+        # handler (not the export's) owns the log file and the repeat timer.
+        self._gdrive_after_export = False
         # Set when a scheduled run kicks off discovery, so the export starts
         # automatically once the page list comes back.
         self._auto_export_after_discovery = False
         # UA of the browser that produced the current cookie, if any.
         self._captured_user_agent = ""
+        # Google account last signed in with; display only.
+        self._gdrive_account = ""
         # Open only while an export or MD→PDF run is in flight — see
         # _open_run_log_file / _close_run_log_file. Mirrors every line that
         # reaches the log panel, so a run too long to scroll through (or one
@@ -314,6 +330,7 @@ class MainWindow(QMainWindow):
 
         self._on_auth_mode_changed()
         self._on_repeat_toggled(self.repeat_check.isChecked())
+        self._refresh_gdrive_account()
         self._update_count()
         self._append_log(
             f"Settings file: {config_path()}\n"
@@ -831,7 +848,67 @@ class MainWindow(QMainWindow):
         outer.addLayout(third)
 
         outer.addWidget(self._build_wkhtml_row())
+        outer.addWidget(self._build_gdrive_rows())
         return group
+
+    def _build_gdrive_rows(self) -> QWidget:
+        wrapper = QWidget()
+        grid = QGridLayout(wrapper)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(6)
+
+        grid.addWidget(QLabel("Google Drive:"), 0, 0)
+        self.gdrive_url_edit = QLineEdit()
+        self.gdrive_url_edit.setPlaceholderText(
+            "https://drive.google.com/drive/folders/…  (folder in a Shared Drive or My Drive)"
+        )
+        self.gdrive_url_edit.setToolTip(
+            "Open the destination folder in your browser and paste its address.\n"
+            "'Upload to Google Docs' mirrors the output directory into it: the\n"
+            "folder tree is recreated, every .md becomes an editable Google Doc,\n"
+            "and links between pages point at the Docs.\n"
+            "Re-uploading updates the same Docs in place; Docs whose page hasn't\n"
+            "changed in Confluence are left alone, edits included."
+        )
+        grid.addWidget(self.gdrive_url_edit, 0, 1, 1, 3)
+        self.gdrive_signin_button = QPushButton("Sign in…")
+        self.gdrive_signin_button.clicked.connect(self._toggle_gdrive_sign_in)
+        grid.addWidget(self.gdrive_signin_button, 0, 4)
+
+        grid.addWidget(QLabel("OAuth client:"), 1, 0)
+        self.gdrive_client_edit = QLineEdit()
+        self.gdrive_client_edit.setPlaceholderText(
+            "client_secret_….json — a 'Desktop app' OAuth client from IT"
+        )
+        self.gdrive_client_edit.setToolTip(
+            "The OAuth client file Google sign-in needs. Ask IT for a 'Desktop\n"
+            "app' OAuth client in the company's Google Cloud project, with the\n"
+            "Google Drive API enabled and the scope\n"
+            "https://www.googleapis.com/auth/drive."
+        )
+        grid.addWidget(self.gdrive_client_edit, 1, 1)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._pick_gdrive_client)
+        grid.addWidget(browse, 1, 2)
+        self.gdrive_auto_check = QCheckBox("Upload after each export")
+        self.gdrive_auto_check.setToolTip(
+            "Run 'Upload to Google Docs' automatically when an export finishes —\n"
+            "including the runs started by 'Repeat every'."
+        )
+        grid.addWidget(self.gdrive_auto_check, 1, 3)
+        self.gdrive_upload_button = QPushButton("Upload to Google Docs")
+        self.gdrive_upload_button.setToolTip(
+            "Mirror the output directory into the Google Drive folder above."
+        )
+        self.gdrive_upload_button.clicked.connect(self._start_gdrive_upload)
+        grid.addWidget(self.gdrive_upload_button, 1, 4)
+
+        self.gdrive_account_label = QLabel("")
+        self.gdrive_account_label.setObjectName("HintLabel")
+        grid.addWidget(self.gdrive_account_label, 2, 1, 1, 4)
+        grid.setColumnStretch(1, 1)
+        return wrapper
 
     def _build_wkhtml_row(self) -> QWidget:
         wrapper = QWidget()
@@ -892,7 +969,8 @@ class MainWindow(QMainWindow):
         for line in (self.base_url_edit, self.username_edit, self.pat_edit,
                      self.cookie_edit, self.space_edit, self.top_id_edit,
                      self.top_title_edit, self.output_dir_edit,
-                     self.wkhtml_edit):
+                     self.wkhtml_edit, self.gdrive_url_edit,
+                     self.gdrive_client_edit):
             line.textChanged.connect(self._schedule_save)
         for cb in (self.remember_check, self.only_modified_check,
                    self.overwrite_check, self.skip_unchanged_check,
@@ -901,7 +979,7 @@ class MainWindow(QMainWindow):
                    self.index_check, self.include_page_id_check,
                    self.write_blank_check, self.pad_numbers_check,
                    self.download_images_check, self.download_linked_files_check,
-                   self.repeat_check):
+                   self.repeat_check, self.gdrive_auto_check):
             cb.toggled.connect(self._schedule_save)
         self.api_path_combo.currentTextChanged.connect(self._schedule_save)
         self.auth_mode_combo.currentIndexChanged.connect(self._schedule_save)
@@ -942,6 +1020,10 @@ class MainWindow(QMainWindow):
             "download_linked_files": self.download_linked_files_check.isChecked(),
             "repeat_enabled": self.repeat_check.isChecked(),
             "repeat_minutes": self.repeat_spin.value(),
+            "gdrive_folder_url": self.gdrive_url_edit.text(),
+            "gdrive_client_file": self.gdrive_client_edit.text(),
+            "gdrive_auto_upload": self.gdrive_auto_check.isChecked(),
+            "gdrive_account": self._gdrive_account,
             "remember_credentials": self.remember_check.isChecked(),
             "theme": {
                 "flavor": flavor_data.value if isinstance(flavor_data, Flavor) else "mocha",
@@ -970,6 +1052,8 @@ class MainWindow(QMainWindow):
             ("top_page_title", self.top_title_edit),
             ("output_dir", self.output_dir_edit),
             ("wkhtmltopdf_path", self.wkhtml_edit),
+            ("gdrive_folder_url", self.gdrive_url_edit),
+            ("gdrive_client_file", self.gdrive_client_edit),
             ("pat", self.pat_edit),
             ("cookie", self.cookie_edit),
         ):
@@ -977,6 +1061,7 @@ class MainWindow(QMainWindow):
                 widget.setText(str(cfg[key]))
         if cfg.get("cookie_user_agent"):
             self._captured_user_agent = str(cfg["cookie_user_agent"])
+        self._gdrive_account = str(cfg.get("gdrive_account") or "")
         if cfg.get("api_path"):
             self.api_path_combo.setCurrentText(str(cfg["api_path"]))
         if cfg.get("auth_mode"):
@@ -1003,6 +1088,7 @@ class MainWindow(QMainWindow):
             ("download_images", self.download_images_check),
             ("download_linked_files", self.download_linked_files_check),
             ("repeat_enabled", self.repeat_check),
+            ("gdrive_auto_upload", self.gdrive_auto_check),
         ):
             if key in cfg:
                 widget.setChecked(bool(cfg[key]))
@@ -1394,7 +1480,7 @@ class MainWindow(QMainWindow):
         ]
 
     def _start_export(self) -> None:
-        if self._worker is not None:
+        if self._worker is not None or self._gdrive_worker is not None:
             return
         pages = self._queued_pages()
         if not pages:
@@ -1483,6 +1569,12 @@ class MainWindow(QMainWindow):
                 msg += f" {blank} blank page(s) skipped."
         self.statusBar().showMessage(msg)
         self._append_log(msg)
+
+        if self.gdrive_auto_check.isChecked() and (success or skipped):
+            # The upload continues this run's log; its finish handler takes
+            # over the repeat timer and the closing message.
+            if self._start_gdrive_upload(after_export=True):
+                return
         self._close_run_log_file()
 
         if self.repeat_check.isChecked():
@@ -1510,7 +1602,8 @@ class MainWindow(QMainWindow):
         )
 
     def _on_repeat_timeout(self) -> None:
-        if self._worker is not None or self._discovery_worker is not None:
+        if (self._worker is not None or self._discovery_worker is not None
+                or self._gdrive_worker is not None):
             # A manual run is in flight; try again after the same interval
             # rather than queueing two exports against one output folder.
             self._schedule_next_run()
@@ -1566,10 +1659,146 @@ class MainWindow(QMainWindow):
                 msg + "\n\nSee the log — wkhtmltopdf is the usual culprit.",
             )
 
+    # --- Google Drive -------------------------------------------------
+
+    def _refresh_gdrive_account(self) -> None:
+        signed_in = token_path().is_file()
+        self.gdrive_signin_button.setText("Sign out" if signed_in else "Sign in…")
+        if signed_in:
+            who = self._gdrive_account or "a Google account"
+            self.gdrive_account_label.setText(f"Signed in to Google as {who}.")
+        else:
+            self.gdrive_account_label.setText(
+                "Not signed in. Sign-in opens your browser; the token is kept "
+                f"owner-only in {token_path()}."
+            )
+
+    def _pick_gdrive_client(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select the OAuth client file", self.gdrive_client_edit.text(),
+            "OAuth client (*.json);;All files (*)",
+        )
+        if path:
+            self.gdrive_client_edit.setText(str(Path(path)))
+
+    def _toggle_gdrive_sign_in(self) -> None:
+        if token_path().is_file():
+            sign_out()
+            self._gdrive_account = ""
+            self._schedule_save()
+            self._append_log("Signed out of Google.")
+            self._refresh_gdrive_account()
+            return
+        if self._signin_worker is not None:
+            return
+        client = Path(self.gdrive_client_edit.text().strip())
+        if not client.is_file():
+            QMessageBox.warning(
+                self, "OAuth client file required",
+                "Select the OAuth client JSON file first (ask IT for a "
+                "'Desktop app' OAuth client with the Google Drive API enabled).",
+            )
+            return
+        self.gdrive_signin_button.setEnabled(False)
+        self.gdrive_account_label.setText(
+            "Waiting for you to approve access in the browser (5 min timeout)…"
+        )
+        worker = SignInWorker(client)
+        worker.finished.connect(self._on_gdrive_signed_in)
+        self._signin_worker = worker
+        # A daemon Python thread, not a QThread: the browser flow blocks
+        # until the user approves (up to its 5-minute timeout) and cannot be
+        # interrupted, and a QThread still running at window close aborts
+        # the process. The signal is queued back to the GUI thread.
+        threading.Thread(target=worker.run, daemon=True).start()
+
+    def _on_gdrive_signed_in(self, email: str, error: str) -> None:
+        self._signin_worker = None
+        self.gdrive_signin_button.setEnabled(True)
+        if error:
+            self._append_log(f"! Google sign-in failed: {error}")
+            QMessageBox.warning(self, "Google sign-in failed", error)
+        else:
+            self._gdrive_account = email
+            self._schedule_save()
+            self._append_log(f"Signed in to Google as {email}.")
+        self._refresh_gdrive_account()
+
+    def _start_gdrive_upload(self, after_export: bool = False) -> bool:
+        """Start mirroring the output folder to Drive. False if not started."""
+        if self._gdrive_worker is not None:
+            return False
+        out_text = self.output_dir_edit.text().strip()
+        folder_id = parse_folder_id(self.gdrive_url_edit.text())
+        problem = ""
+        if not out_text or not Path(out_text).is_dir():
+            problem = "Choose an existing output directory containing .md files."
+        elif not folder_id:
+            problem = (
+                "Paste the address of the destination Google Drive folder, e.g.\n"
+                "https://drive.google.com/drive/folders/1AbC…"
+            )
+        elif not token_path().is_file():
+            problem = "Sign in to Google first."
+        if problem:
+            if after_export:
+                self._append_log(f"! Upload to Google Docs skipped: {problem}")
+            else:
+                QMessageBox.warning(self, "Cannot upload to Google Docs", problem)
+            return False
+
+        if not after_export:
+            self._open_run_log_file(Path(out_text))
+            self._append_log("=" * 60)
+        self._gdrive_after_export = after_export
+        self.gdrive_upload_button.setEnabled(False)
+        self.export_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.progress.setRange(0, 0)
+        self.statusBar().showMessage("Uploading to Google Docs…")
+
+        worker = DriveUploadWorker(Path(out_text), folder_id)
+        worker.progress.connect(self._on_progress)
+        worker.log.connect(self._append_log)
+        worker.finished.connect(self._on_gdrive_finished)
+        self._gdrive_worker = worker
+        self._gdrive_thread = run_in_thread(worker)
+        return True
+
+    def _on_gdrive_finished(
+        self, created: int, updated: int, unchanged: int, failed: int
+    ) -> None:
+        self._gdrive_worker = None
+        self._gdrive_thread = None
+        after_export, self._gdrive_after_export = self._gdrive_after_export, False
+        self.gdrive_upload_button.setEnabled(True)
+        self.export_button.setEnabled(self.page_list.count() > 0)
+        self.cancel_button.setEnabled(False)
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        msg = (
+            f"Google Docs: {created} created, {updated} updated, "
+            f"{unchanged} unchanged, {failed} failed."
+        )
+        self.statusBar().showMessage(msg)
+        self._append_log(msg)
+        self._close_run_log_file()
+
+        if after_export and self.repeat_check.isChecked():
+            self._schedule_next_run()
+            return
+        if failed:
+            QMessageBox.warning(
+                self, "Upload finished with errors", msg + "\n\nSee the log."
+            )
+        else:
+            QMessageBox.information(self, "Upload complete", msg)
+
     # --- Cancel / close ------------------------------------------------
 
     def _cancel_running(self) -> None:
-        for worker in (self._worker, self._discovery_worker, self._pdf_worker):
+        for worker in (self._worker, self._discovery_worker, self._pdf_worker,
+                       self._gdrive_worker):
             if worker is not None:
                 worker.cancel()
         self._repeat_timer.stop()
