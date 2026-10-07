@@ -482,6 +482,12 @@ version overwrites it, and earlier edits are only recoverable from the Doc's
 version history. Items it didn't create are never touched, and it never
 deletes anything: a page removed from Confluence leaves its Doc behind.
 
+A large space takes a while, since every page is its own API call. **Cancel**
+is safe at any point: each Doc is created together with its content, so
+nothing is left half-made. The next upload resumes where the last one
+stopped, because finished pages match their stored hash and are skipped
+without an API call.
+
 Tick **Upload after each export** to chain it onto every export, including
 the runs started by **Repeat every**.
 

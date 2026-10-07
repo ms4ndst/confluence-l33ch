@@ -273,3 +273,44 @@ def test_items_not_created_by_the_mirror_are_ignored(tmp_path):
     _mirror(drive, tmp_path)
     assert "manual" not in drive.content
     assert drive.items["manual"]["name"] == "Child"
+
+
+def test_links_to_docs_created_later_in_the_run_are_filled_in(tmp_path):
+    # README and Child sort before Parent, so their links point ahead.
+    _export(tmp_path)
+    drive = FakeDrive()
+    _mirror(drive, tmp_path)
+    parent_url = (
+        f"https://docs.google.com/document/d/"
+        f"{drive.by_name('Parent', DOC_MIME)['id']}/edit"
+    )
+    assert parent_url in drive.html("README")
+    assert parent_url in drive.html("Child")
+    assert ".md" not in drive.html("Child")
+
+
+def test_a_cancelled_run_leaves_no_empty_docs(tmp_path):
+    _export(tmp_path)
+    drive = FakeDrive()
+    calls = iter([False, True])
+    DriveMirror(drive, ROOT_ID, tmp_path, cancelled=lambda: next(calls, True)).run()
+
+    docs = [i for i in drive.items.values() if i["mimeType"] == DOC_MIME]
+    assert len(docs) == 1
+    assert all(drive.content.get(d["id"]) for d in docs)
+
+
+def test_empty_docs_from_an_interrupted_older_run_get_filled(tmp_path):
+    # The previous version created every Doc empty first; a cancelled run
+    # left those behind, tagged but without a content hash.
+    _export(tmp_path)
+    drive = FakeDrive()
+    drive.items["old"] = {"id": "old", "name": "Child", "mimeType": DOC_MIME,
+                          "parents": [ROOT_ID],
+                          "appProperties": {"l33chRoot": ROOT_ID,
+                                            "l33chKey": "page:2"}}
+    stats = _mirror(drive, tmp_path)
+
+    assert (stats.created, stats.updated) == (2, 1)
+    assert "Back to" in drive.content["old"].decode("utf-8")
+    assert drive.items["old"]["parents"] == [drive.by_name("Parent", FOLDER_MIME)["id"]]

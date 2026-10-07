@@ -8,8 +8,9 @@ Shared Drive) identified by the URL the user pastes from the browser.
 What it does on every run:
 
 * Recreates the local folder tree under the destination folder.
-* Turns every ``.md`` into a Google Doc. The Markdown is rendered to HTML
-  locally and uploaded with conversion, so headings, lists, tables and
+* Turns every ``.md`` into a Google Doc, created together with its content
+  so an interrupted run never leaves empty Docs. The Markdown is rendered
+  to HTML locally and uploaded with conversion, so headings, lists, tables and
   emphasis become native Docs formatting. Local images are embedded as
   ``data:`` URIs — Google cannot fetch a relative path, and a Confluence URL
   needs a login it doesn't have.
@@ -467,36 +468,29 @@ class DriveMirror:
             self._log(f"No .md files found in {self._root}.")
             return self.stats
 
-        # Pass 1: make sure every page has a Doc, so pass 2 can link to any
-        # of them regardless of order.
-        pages: list[tuple[Path, str, str, bool]] = []  # path, key, title, new
-        doc_for: dict[Path, str] = {}
-        total = len(files)
-        self._log(f"Preparing {total} Google Doc(s)…")
-        for index, path in enumerate(files):
-            if self._cancelled():
-                return self.stats
+        # Identify every page up front (local reads only, no API calls), so a
+        # link can resolve to any Doc that already exists from an earlier run.
+        pages: list[tuple[Path, str, str]] = []   # path, key, title
+        key_for: dict[Path, str] = {}
+        for path in files:
             rel = self._rel(path)
-            self._progress(index, total * 2, rel)
             meta, _body = split_front_matter(path.read_text(encoding="utf-8"))
             key, title = page_identity(rel, meta)
-            if path.name == INDEX_FILENAME and rel == INDEX_FILENAME:
+            if rel == INDEX_FILENAME:
                 key, title = path_key("path", rel), "README"
-            try:
-                parent = self._folder(rel.rpartition("/")[0])
-                doc_id, created = self._place(key, title, parent, DOC_MIME)
-            except Exception as exc:  # noqa: BLE001
-                self.stats.failed += 1
-                self._fail(rel, exc)
-                continue
-            if created:
-                self.stats.created += 1
-            pages.append((path, key, title, created))
-            doc_for[path.resolve()] = doc_id
+            pages.append((path, key, title))
+            key_for[path.resolve()] = key
+
+        pending: set[Path] = set()   # pages linking to a Doc not created yet
 
         def link_target(target: Path) -> str:
-            if target in doc_for:
-                return DOC_URL.format(id=doc_for[target])
+            key = key_for.get(target)
+            if key is not None:
+                item = self._existing.get(key)
+                if item is None:
+                    pending.add(current[0])
+                    return ""
+                return DOC_URL.format(id=item["id"])
             if target.is_file() and target.suffix.lower() != ".md":
                 try:
                     return self._upload_linked_file(target)
@@ -504,35 +498,84 @@ class DriveMirror:
                     self._fail(self._rel(target), exc)
             return ""
 
-        # Pass 2: content.
-        for index, (path, key, title, created) in enumerate(pages):
+        current: list[Path] = [files[0]]
+        total = len(pages)
+        self._log(f"Uploading {total} page(s) as Google Docs…")
+        # One pass: each Doc is created *with* its content, so a cancelled or
+        # failed run never leaves empty Docs behind, and a re-run picks up
+        # where it stopped — finished pages hash-match and cost no API call.
+        for index, (path, key, title) in enumerate(pages):
             if self._cancelled():
-                break
-            rel = self._rel(path)
-            self._progress(total + index, total * 2, rel)
-            try:
-                _meta, body = split_front_matter(path.read_text(encoding="utf-8"))
-                html, remote = rewrite_html(
-                    markdown_to_doc_html(body, title),
-                    path.parent.resolve(), self._root, link_target,
-                )
-                self.stats.remote_images += remote
-                data = html.encode("utf-8")
-                digest = content_hash(data)
-                if self._stored_hash(key) == digest:
-                    self.stats.unchanged += 1
-                    continue
-                self._put_content(key, data, "text/html", digest)
-                if not created:
-                    self.stats.updated += 1
-                doc_url = DOC_URL.format(id=self._existing[key]["id"])
-                self._log(f"  -> {rel}  ({doc_url})")
-            except Exception as exc:  # noqa: BLE001
-                self.stats.failed += 1
-                self._fail(rel, exc)
+                return self.stats
+            current[0] = path.resolve()
+            self._progress(index, total, self._rel(path))
+            self._sync_page(path, key, title, link_target)
 
-        self._progress(total * 2, total * 2, "")
+        # Pages that linked ahead to a Doc created later in this run: render
+        # them again now that every Doc exists. Only their links change.
+        if pending and not self._cancelled():
+            self._log(f"Linking {len(pending)} page(s) to Docs created this run…")
+            for path, key, title in pages:
+                if self._cancelled():
+                    break
+                if path.resolve() in pending:
+                    current[0] = path.resolve()
+                    self._sync_page(path, key, title, link_target, relink=True)
+
+        self._progress(total, total, "")
         return self.stats
+
+    def _sync_page(self, path: Path, key: str, title: str,
+                   link_target: Callable[[Path], str], relink: bool = False) -> None:
+        """Create or update one page's Doc; counts into :attr:`stats`."""
+        rel = self._rel(path)
+        try:
+            _meta, body = split_front_matter(path.read_text(encoding="utf-8"))
+            html, remote = rewrite_html(
+                markdown_to_doc_html(body, title),
+                path.parent.resolve(), self._root, link_target,
+            )
+            if not relink:
+                self.stats.remote_images += remote
+            data = html.encode("utf-8")
+            digest = content_hash(data)
+            parent = self._folder(rel.rpartition("/")[0])
+            if key not in self._existing:
+                self._create_doc(key, title, parent, data, digest)
+                self.stats.created += 1
+                action = "created"
+            else:
+                self._place(key, title, parent, DOC_MIME)
+                if self._stored_hash(key) == digest:
+                    if not relink:
+                        self.stats.unchanged += 1
+                    return
+                self._put_content(key, data, "text/html", digest)
+                if not relink:
+                    self.stats.updated += 1
+                action = "relinked" if relink else "updated"
+            doc_url = DOC_URL.format(id=self._existing[key]["id"])
+            self._log(f"  {action}: {rel}  ({doc_url})")
+        except Exception as exc:  # noqa: BLE001
+            if not relink:
+                self.stats.failed += 1
+            self._fail(rel, exc)
+
+    def _create_doc(self, key: str, title: str, parent: str, data: bytes,
+                    digest: str) -> None:
+        """Create a Google Doc from HTML in one call (Drive converts it)."""
+        from googleapiclient.http import MediaInMemoryUpload
+
+        created = self._files.create(
+            body={"name": title, "mimeType": DOC_MIME, "parents": [parent],
+                  "appProperties": self._tags(key, l33chHash=digest)},
+            media_body=MediaInMemoryUpload(data, mimetype="text/html", resumable=True),
+            fields="id",
+            supportsAllDrives=True,
+        ).execute(num_retries=RETRIES)
+        self._existing[key] = {"id": created["id"], "name": title,
+                               "parents": [parent],
+                               "appProperties": {"l33chHash": digest}}
 
     def _fail(self, rel: str, exc: Exception) -> None:
         message = f"{rel}: {type(exc).__name__}: {exc}"
