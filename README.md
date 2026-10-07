@@ -399,16 +399,63 @@ mounted locally, so it works the same on Linux.
 
 **One-time setup**
 
-1. Get an OAuth client file from IT: a **Desktop app** OAuth client in the
-   company's Google Cloud project, with the **Google Drive API** enabled and
-   the scope `https://www.googleapis.com/auth/drive`. (The narrower
-   `drive.file` scope can't see a folder someone else created.)
+1. Get the OAuth client file (see [Creating the OAuth client
+   file](#creating-the-oauth-client-file) below), or ask IT for one.
 2. Select it in **OAuth client**, then click **Sign in…**. Your browser opens
    Google's consent page; approve, and the app stores a refresh token,
    owner-only, as `google-token.json` next to the settings file. **Sign out**
    deletes it.
 3. Open the destination folder in Drive and paste its address into **Google
    Drive**. The signed-in account needs Contributor access or higher.
+
+#### Creating the OAuth client file
+
+The file comes from the Google Cloud Console, in a project under the
+company's Google organisation. If you aren't allowed to create projects or
+clients there, IT has to do these steps and send you the file.
+
+1. Open <https://console.cloud.google.com> and pick (or create) the project
+   in the selector at the top.
+2. **APIs & Services → Library** → search for **Google Drive API** →
+   **Enable**.
+3. Configure the consent screen once per project: **Google Auth Platform**
+   (older consoles: **APIs & Services → OAuth consent screen**). Fill in an
+   app name and support email, and set **Audience** to **Internal**. That
+   limits sign-in to company accounts and skips Google's app verification.
+4. **Google Auth Platform → Clients → Create client** (older consoles:
+   **APIs & Services → Credentials → Create credentials → OAuth client ID**).
+   Choose application type **Desktop app** and name it, e.g. *Confluence
+   L33ch*.
+5. Click **Create**, then **Download JSON** in the dialog that follows. The
+   file is named like `client_secret_….apps.googleusercontent.com.json`.
+   Download it right away: newer consoles show the client secret only at
+   creation time. If you miss it, add a new secret to the client and
+   download again.
+
+Why **Desktop app**: sign-in uses Google's installed-app flow, which opens
+your browser and catches the redirect on a temporary `localhost` server with
+a random port. Only the Desktop app type accepts those redirects without
+registering them. Don't pick these:
+
+* **Web application** fails with `redirect_uri_mismatch`, because the port
+  changes every time.
+* The mobile, TV, Chrome-extension and UWP types are for other kinds of app
+  and don't work with this flow.
+* A **service account** acts as a robot account instead of you, and the app
+  doesn't support it.
+
+The app asks for the scope `https://www.googleapis.com/auth/drive`. The
+narrower `drive.file` scope only sees files the app created itself, so it
+can't open a folder someone else made.
+
+For a Desktop app client, Google doesn't treat the client secret as
+confidential, so the same file can be shared with colleagues. Each person
+still signs in with their own account and only reaches what that account can
+already open. Keep it internal anyway, and out of the git repository.
+
+If sign-in shows *"Access blocked: this app is not approved"*, a Workspace
+admin has to allow the client ID in the Admin console under **Security → API
+controls → App access control**.
 
 **What an upload does**
 
