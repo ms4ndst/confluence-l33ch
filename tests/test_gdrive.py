@@ -109,13 +109,14 @@ class _Call:
 class FakeDrive:
     """Just enough of the Drive v3 ``files`` resource for DriveMirror."""
 
-    def __init__(self, drive_id="SharedDrive1"):
+    def __init__(self, drive_id="SharedDrive1", member=True):
         self.items = {ROOT_ID: {"id": ROOT_ID, "name": "Target",
                                 "mimeType": FOLDER_MIME, "parents": [],
                                 "appProperties": {}}}
         self.content: dict[str, bytes] = {}
         self.uploads = 0
         self.drive_id = drive_id
+        self.member = member
         self._ids = (f"id{n}" for n in itertools.count())
 
     def files(self):
@@ -128,7 +129,14 @@ class FakeDrive:
         return _Call(lambda: item)
 
     def list(self, q, pageToken=None, **kwargs):
-        assert kwargs.get("driveId") == self.drive_id
+        if kwargs.get("corpora") == "drive":
+            assert kwargs.get("driveId") == self.drive_id
+            if not self.member:
+                raise RuntimeError(
+                    "<HttpError 403 ... 'reason': 'teamDriveMembershipRequired'>"
+                )
+        else:
+            assert kwargs.get("corpora") == "allDrives"
         root = re.search(r"value='([^']+)'", q).group(1)
         found = [dict(i) for i in self.items.values()
                  if (i.get("appProperties") or {}).get("l33chRoot") == root]
@@ -314,3 +322,12 @@ def test_empty_docs_from_an_interrupted_older_run_get_filled(tmp_path):
     assert (stats.created, stats.updated) == (2, 1)
     assert "Back to" in drive.content["old"].decode("utf-8")
     assert drive.items["old"]["parents"] == [drive.by_name("Parent", FOLDER_MIME)["id"]]
+
+
+def test_a_folder_shared_from_a_drive_we_are_not_in_still_mirrors(tmp_path):
+    _export(tmp_path)
+    drive = FakeDrive(member=False)
+    assert _mirror(drive, tmp_path).created == 3
+    # The rerun finds what the first run made instead of duplicating it.
+    stats = _mirror(drive, tmp_path)
+    assert (stats.created, stats.unchanged, stats.failed) == (0, 3, 0)

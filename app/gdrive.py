@@ -287,6 +287,7 @@ class DriveMirror:
         self._progress = progress
         self._cancelled = cancelled
         self._drive_id = ""
+        self._shared_only = False              # in a Shared Drive we're not in
         self._existing: dict[str, dict] = {}   # l33chKey -> Drive file
         self._folders: dict[str, str] = {}     # relative dir ("" = root) -> id
         self._linked_done: set[str] = set()    # linked-file keys synced this run
@@ -295,9 +296,14 @@ class DriveMirror:
     # --- Drive plumbing ---------------------------------------------
 
     def _list_kwargs(self) -> dict:
-        if self._drive_id:
+        if self._drive_id and not self._shared_only:
             return {"corpora": "drive", "driveId": self._drive_id,
                     "includeItemsFromAllDrives": True, "supportsAllDrives": True}
+        if self._drive_id:
+            # The folder is shared with us but we aren't a member of its
+            # Shared Drive, which corpora=drive refuses outright.
+            return {"corpora": "allDrives", "supportsAllDrives": True,
+                    "includeItemsFromAllDrives": True}
         return {"corpora": "user", "supportsAllDrives": True,
                 "includeItemsFromAllDrives": True}
 
@@ -331,13 +337,16 @@ class DriveMirror:
         )
         token = None
         while True:
-            resp = self._files.list(
-                q=query,
-                fields="nextPageToken,files(id,name,mimeType,parents,appProperties)",
-                pageSize=1000,
-                pageToken=token,
-                **self._list_kwargs(),
-            ).execute(num_retries=RETRIES)
+            try:
+                resp = self._list_page(query, token)
+            except Exception as exc:  # noqa: BLE001 — googleapiclient HttpError
+                if (token or self._shared_only
+                        or "teamDriveMembershipRequired" not in str(exc)):
+                    raise
+                self._log("Not a member of this Shared Drive — searching the "
+                          "folders shared with you instead.")
+                self._shared_only = True
+                resp = self._list_page(query, token)
             for item in resp.get("files", []):
                 key = (item.get("appProperties") or {}).get("l33chKey")
                 if key:
@@ -345,6 +354,15 @@ class DriveMirror:
             token = resp.get("nextPageToken")
             if not token:
                 break
+
+    def _list_page(self, query: str, token: str | None) -> dict:
+        return self._files.list(
+            q=query,
+            fields="nextPageToken,files(id,name,mimeType,parents,appProperties)",
+            pageSize=1000,
+            pageToken=token,
+            **self._list_kwargs(),
+        ).execute(num_retries=RETRIES)
 
     def _tags(self, key: str, **extra: str) -> dict:
         return {"l33chRoot": self._root_id, "l33chKey": key, **extra}

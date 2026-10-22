@@ -1,6 +1,15 @@
 """Tests for the client's pure helpers — no network involved."""
 
-from app.confluence_client import Credentials, _page_ref
+import pytest
+
+from app.confluence_client import (
+    ConfluenceClient,
+    ConfluenceError,
+    Credentials,
+    _page_ref,
+    decode_tiny_link,
+    parse_page_ref,
+)
 
 
 def _item(page_id="9", title="Page", ancestors=None, when="2025-01-01T00:00:00Z"):
@@ -270,3 +279,61 @@ def test_space_pages_requests_ancestors_so_mirroring_has_something_to_use():
     assert all("ancestors" in p["expand"].split(",") for p in captured_params)
     assert pages[0].ancestor_titles == ("Parent",)
     assert pages[0].depth == 1
+
+
+BASE = "https://confluence.example.com"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("226870181", ("226870181", "", "")),
+    (f"{BASE}/pages/viewpage.action?pageId=699929261", ("699929261", "", "")),
+    (f"{BASE}/x/pcOFDQ", ("226870181", "", "")),
+    (f"{BASE}/spaces/VSSAT/pages/42/Some+Page", ("42", "", "")),
+    (f"{BASE}/display/VSSAT/Visma+Business+Support",
+     ("", "VSSAT", "Visma Business Support")),
+    ("Visma Business Support", ("", "", "Visma Business Support")),
+    ("", ("", "", "")),
+])
+def test_parse_page_ref(text, expected):
+    assert parse_page_ref(text) == expected
+
+
+def test_decode_tiny_link():
+    assert decode_tiny_link("pcOFDQ") == "226870181"
+    assert decode_tiny_link("not a code!") == ""
+
+
+class _TitleClient(ConfluenceClient):
+    def __init__(self, titles):
+        super().__init__(Credentials(base_url=BASE, pat="t"))
+        self.titles = titles
+        self.lookups = []
+
+    def _get_json(self, url, params=None):
+        self.lookups.append((params["spaceKey"], params["title"]))
+        found = self.titles.get((params["spaceKey"], params["title"]))
+        return {"results": [{"id": found}] if found else []}
+
+
+def test_resolve_page_id_takes_urls_and_short_codes_in_the_id_field():
+    client = _TitleClient({})
+    assert client.resolve_page_id(
+        "S", f"{BASE}/pages/viewpage.action?pageId=7") == "7"
+    assert client.resolve_page_id("S", "pcOFDQ") == "226870181"
+    assert client.lookups == []
+
+
+def test_resolve_page_id_rejects_free_text_in_the_id_field():
+    with pytest.raises(ConfluenceError):
+        _TitleClient({}).resolve_page_id("S", "https://example.com/nothing")
+
+
+def test_resolve_page_id_reads_space_and_title_from_a_display_url():
+    client = _TitleClient({("VSSAT", "Visma Business Support"): "5"})
+    url = f"{BASE}/display/VSSAT/Visma+Business+Support"
+    assert client.resolve_page_id("OTHER", title=url) == "5"
+
+
+def test_resolve_page_id_retries_a_plus_encoded_title_with_spaces():
+    client = _TitleClient({("VSSAT", "Visma Business Support"): "5"})
+    assert client.resolve_page_id("VSSAT", title="Visma+Business+Support") == "5"

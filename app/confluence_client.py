@@ -24,10 +24,11 @@ Design notes
 from __future__ import annotations
 
 import base64
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Iterator
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, unquote_plus, urlsplit
 
 import requests
 
@@ -122,6 +123,62 @@ def parse_space_keys(text: str) -> list[str]:
         if key and key not in keys:
             keys.append(key)
     return keys
+
+
+def decode_tiny_link(code: str) -> str:
+    """Page ID behind a Confluence short link code (``/x/pcOFDQ`` → ``226870181``).
+
+    The code is the page ID as little-endian bytes in URL-safe base64 with
+    ``-``/``_`` standing in for ``/``/``+`` and the padding stripped.
+    Returns ``""`` when ``code`` isn't one.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_-]{2,12}", code or ""):
+        return ""
+    raw = code.replace("-", "/").replace("_", "+")
+    try:
+        data = base64.b64decode(raw + "=" * (-len(raw) % 4), validate=True)
+    except ValueError:
+        return ""
+    page_id = int.from_bytes(data, "little")
+    return str(page_id) if page_id else ""
+
+
+def parse_page_ref(text: str) -> tuple[str, str, str]:
+    """Read a pasted page reference as ``(page_id, space_key, title)``.
+
+    Accepts a bare ID, a short-link code, or a browser URL of any of the
+    usual shapes — ``viewpage.action?pageId=``, ``/x/<code>``,
+    ``/spaces/KEY/pages/<id>/…`` and ``/display/KEY/Page+Title``. Fields
+    the input doesn't carry come back empty; anything unrecognised comes
+    back as the title, so a plain title passes straight through.
+    """
+    text = (text or "").strip()
+    if not text:
+        return "", "", ""
+    if text.isdigit():
+        return text, "", ""
+    if "://" not in text and not text.startswith("/"):
+        return "", "", text
+    parts = urlsplit(text)
+    ids = parse_qs(parts.query).get("pageId")
+    if ids and ids[0].isdigit():
+        return ids[0], "", ""
+    segments = [s for s in parts.path.split("/") if s]
+    if "x" in segments:
+        index = segments.index("x")
+        if index + 1 < len(segments):
+            page_id = decode_tiny_link(segments[index + 1])
+            if page_id:
+                return page_id, "", ""
+    if "pages" in segments:
+        index = segments.index("pages")
+        if index + 1 < len(segments) and segments[index + 1].isdigit():
+            return segments[index + 1], "", ""
+    if "display" in segments:
+        index = segments.index("display")
+        if index + 2 < len(segments):
+            return "", segments[index + 1], unquote_plus(segments[index + 2])
+    return "", "", text
 
 
 @dataclass
@@ -269,22 +326,46 @@ class ConfluenceClient:
         page_id: str = "",
         title: str = "",
     ) -> str:
-        """Return a page ID from either an explicit ID or a title lookup."""
-        if page_id.strip():
-            return page_id.strip()
-        if not title.strip():
+        """Return a page ID from either an explicit ID or a title lookup.
+
+        Either field may also hold a pasted page URL, and the ID field a
+        short-link code (see :func:`parse_page_ref`). A ``/display/KEY/Title``
+        URL brings its own space key.
+        """
+        ref_id, ref_space, ref_title = parse_page_ref(page_id)
+        if ref_title and not ref_space:
+            # Free text in the ID field: only a short-link code makes sense.
+            ref_id, ref_title = decode_tiny_link(ref_title), ""
+            if not ref_id:
+                raise ConfluenceError(
+                    f"'{page_id.strip()}' is not a page ID, page URL or short "
+                    "link. Paste the page's URL, or use the title field."
+                )
+        if not (ref_id or ref_title):
+            ref_id, ref_space, ref_title = parse_page_ref(title)
+        if ref_id:
+            return ref_id
+        if not ref_title:
             return ""
-        data = self._get_json(
-            f"{self.creds.api_root}/content",
-            {"spaceKey": space_key, "title": title.strip(), "type": "page"},
-        )
-        results = data.get("results", [])
+        space_key = ref_space or space_key
+        title = ref_title
+        results = self._title_lookup(space_key, title)
+        if not results and "+" in title and " " not in title:
+            # Copied out of a /display/KEY/Page+Title URL.
+            results = self._title_lookup(space_key, title.replace("+", " "))
         if not results:
             raise ConfluenceError(
                 f"No page titled '{title}' in space '{space_key}'. "
                 "Titles are exact and case-sensitive; check the space key too."
             )
         return str(results[0].get("id", ""))
+
+    def _title_lookup(self, space_key: str, title: str) -> list[dict]:
+        data = self._get_json(
+            f"{self.creds.api_root}/content",
+            {"spaceKey": space_key, "title": title, "type": "page"},
+        )
+        return data.get("results", [])
 
     def get_page(self, page_id: str, with_body: bool = True) -> dict:
         """Fetch one page, optionally including its storage-format body."""
