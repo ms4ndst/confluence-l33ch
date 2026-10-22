@@ -71,6 +71,7 @@ def _run(tmp_path, pages=None, **opts):
     )
     worker.run()
     results["logs"] = logs
+    results["md_files"] = sorted(p.name for p in worker.md_files)
     return results
 
 
@@ -398,3 +399,10 @@ def test_several_spaces_index_has_a_section_per_space(tmp_path):
     assert "## CEPL\n\n- [Beta](Beta_2.md)" in index
     state = json.loads((tmp_path / STATE_FILENAME).read_text(encoding="utf-8"))
     assert state["space_keys"] == ["VSA", "CEPL"]
+
+
+def test_md_files_lists_this_runs_pages_written_or_unchanged(tmp_path):
+    (tmp_path / "Older export_9.md").write_text("# left over\n")
+    expected = ["Alpha_1.md", "Beta_2.md", "README.md"]
+    assert _run(tmp_path)["md_files"] == expected
+    assert _run(tmp_path, skip_unchanged=True)["md_files"] == expected

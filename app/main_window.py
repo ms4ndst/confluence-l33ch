@@ -232,6 +232,9 @@ class MainWindow(QMainWindow):
         # True while an upload runs as the tail of an export, so its finish
         # handler (not the export's) owns the log file and the repeat timer.
         self._gdrive_after_export = False
+        # Set by "Upload to Google Docs": upload once the export it started
+        # finishes, whether or not "Upload after each export" is ticked.
+        self._upload_requested = False
         # Set when a scheduled run kicks off discovery, so the export starts
         # automatically once the page list comes back.
         self._auto_export_after_discovery = False
@@ -893,15 +896,17 @@ class MainWindow(QMainWindow):
         grid.addWidget(browse, 1, 2)
         self.gdrive_auto_check = QCheckBox("Upload after each export")
         self.gdrive_auto_check.setToolTip(
-            "Run 'Upload to Google Docs' automatically when an export finishes —\n"
+            "Upload each export's pages to Google Docs when it finishes —\n"
             "including the runs started by 'Repeat every'."
         )
         grid.addWidget(self.gdrive_auto_check, 1, 3)
         self.gdrive_upload_button = QPushButton("Upload to Google Docs")
         self.gdrive_upload_button.setToolTip(
-            "Mirror the output directory into the Google Drive folder above."
+            "Leech the listed pages, then upload them to the Google Drive\n"
+            "folder above. Only this export's pages are uploaded, not older\n"
+            "exports sitting in the same output directory."
         )
-        self.gdrive_upload_button.clicked.connect(self._start_gdrive_upload)
+        self.gdrive_upload_button.clicked.connect(self._leech_and_upload)
         grid.addWidget(self.gdrive_upload_button, 1, 4)
 
         self.gdrive_account_label = QLabel("")
@@ -1549,6 +1554,9 @@ class MainWindow(QMainWindow):
         organizational: int,
         blank: int = 0,
     ) -> None:
+        md_files = self._worker.md_files if self._worker is not None else []
+        cancelled = self._worker is not None and self._worker.cancelled
+        upload_requested, self._upload_requested = self._upload_requested, False
         self._worker = None
         self._thread = None
         self.export_button.setEnabled(True)
@@ -1570,10 +1578,15 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(msg)
         self._append_log(msg)
 
-        if self.gdrive_auto_check.isChecked() and (success or skipped):
+        wants_upload = upload_requested or self.gdrive_auto_check.isChecked()
+        if upload_requested and not md_files:
+            self._append_log(
+                "! Nothing to upload: this export wrote no Markdown files."
+            )
+        if wants_upload and md_files and not cancelled:
             # The upload continues this run's log; its finish handler takes
             # over the repeat timer and the closing message.
-            if self._start_gdrive_upload(after_export=True):
+            if self._start_gdrive_upload(after_export=True, only=md_files):
                 return
         self._close_run_log_file()
 
@@ -1724,22 +1737,42 @@ class MainWindow(QMainWindow):
             self._append_log(f"Signed in to Google as {email}.")
         self._refresh_gdrive_account()
 
-    def _start_gdrive_upload(self, after_export: bool = False) -> bool:
-        """Start mirroring the output folder to Drive. False if not started."""
+    def _gdrive_problem(self, need_output: bool = True) -> str:
+        """Why an upload can't start right now, or ``""`` if it can."""
+        out_text = self.output_dir_edit.text().strip()
+        if need_output and (not out_text or not Path(out_text).is_dir()):
+            return "Choose an existing output directory containing .md files."
+        if not parse_folder_id(self.gdrive_url_edit.text()):
+            return (
+                "Paste the address of the destination Google Drive folder, e.g.\n"
+                "https://drive.google.com/drive/folders/1AbC…"
+            )
+        if not token_path().is_file():
+            return "Sign in to Google first."
+        return ""
+
+    def _leech_and_upload(self) -> None:
+        """Export the listed pages, then upload them (see _on_export_finished)."""
+        # The export creates the output directory, so it needn't exist yet.
+        problem = self._gdrive_problem(need_output=False)
+        if problem:
+            QMessageBox.warning(self, "Cannot upload to Google Docs", problem)
+            return
+        self._upload_requested = True
+        self._start_export()
+        if self._worker is None:   # the export didn't start
+            self._upload_requested = False
+
+    def _start_gdrive_upload(
+        self, after_export: bool = False, only: list[Path] | None = None,
+    ) -> bool:
+        """Start mirroring to Drive — ``only`` these .md files if given, else
+        the whole output folder. False if not started."""
         if self._gdrive_worker is not None:
             return False
         out_text = self.output_dir_edit.text().strip()
         folder_id = parse_folder_id(self.gdrive_url_edit.text())
-        problem = ""
-        if not out_text or not Path(out_text).is_dir():
-            problem = "Choose an existing output directory containing .md files."
-        elif not folder_id:
-            problem = (
-                "Paste the address of the destination Google Drive folder, e.g.\n"
-                "https://drive.google.com/drive/folders/1AbC…"
-            )
-        elif not token_path().is_file():
-            problem = "Sign in to Google first."
+        problem = self._gdrive_problem()
         if problem:
             if after_export:
                 self._append_log(f"! Upload to Google Docs skipped: {problem}")
@@ -1757,7 +1790,7 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 0)
         self.statusBar().showMessage("Uploading to Google Docs…")
 
-        worker = DriveUploadWorker(Path(out_text), folder_id)
+        worker = DriveUploadWorker(Path(out_text), folder_id, only=only)
         worker.progress.connect(self._on_progress)
         worker.log.connect(self._append_log)
         worker.finished.connect(self._on_gdrive_finished)

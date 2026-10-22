@@ -154,6 +154,10 @@ class ExportWorker(QObject):
         self._options = options
         self._cancelled = False
         self._stats = ExportStats()
+        # Every .md belonging to this run's pages — written, placeholder or
+        # unchanged since last time — plus the index. "Upload to Google Docs"
+        # mirrors exactly these, not whatever older exports left in the folder.
+        self.md_files: list[Path] = []
         # (page_id, filename) -> local path, so an image/file referenced
         # twice on the same page (or re-encountered via the in-memory cache)
         # is only downloaded once per run.
@@ -179,6 +183,10 @@ class ExportWorker(QObject):
 
     def cancel(self) -> None:
         self._cancelled = True
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
     # --- paths ----------------------------------------------------------
 
@@ -569,6 +577,8 @@ class ExportWorker(QObject):
             ):
                 self._stats.skipped += 1
                 self.log.emit(f"= Unchanged, skipped: {page.title}")
+                if opts.wants_md:
+                    self._note_md(self._destination(page, ".md"))
                 continue
 
             self.log.emit(f"Fetching: {page.title} (id={page.id})")
@@ -580,6 +590,8 @@ class ExportWorker(QObject):
                     written.append(self._export_pdf(client, page))
 
                 self._stats.succeeded += 1
+                if opts.wants_md:
+                    self._note_md(written[0])
                 for path in written:
                     self.log.emit(f"  -> {path}")
                 self.page_done.emit(page.id, str(written[-1]) if written else "")
@@ -599,6 +611,7 @@ class ExportWorker(QObject):
                             wrote_placeholder = True
                             self._stats.placeholders += 1
                             self.log.emit(f"  -> {path} (placeholder)")
+                            self._note_md(path)
                             self.page_done.emit(page.id, str(path))
                     if not self._is_organizational_page(page):
                         # Typically a page whose content was cleared (e.g.
@@ -635,6 +648,7 @@ class ExportWorker(QObject):
             try:
                 path = self._write_index()
                 self.log.emit(f"  -> {path}")
+                self._note_md(path)
             except OSError as exc:
                 self.log.emit(f"! Could not write {INDEX_FILENAME}: {exc}")
 
@@ -655,6 +669,10 @@ class ExportWorker(QObject):
             self._stats.organizational,
             self._stats.blank,
         )
+
+    def _note_md(self, path: Path) -> None:
+        if path.is_file():
+            self.md_files.append(path)
 
     # --- per-page export -------------------------------------------------
 

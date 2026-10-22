@@ -41,7 +41,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.parse import unquote, urlsplit, parse_qs
 
 from PySide6.QtCore import QObject, Signal
@@ -279,8 +279,11 @@ class DriveMirror:
         log: Callable[[str], None] = lambda _msg: None,
         progress: Callable[[int, int, str], None] = lambda *_a: None,
         cancelled: Callable[[], bool] = lambda: False,
+        only: Iterable[Path] | None = None,
     ) -> None:
         self._files = service.files()
+        # Mirror just these .md files instead of every one under local_root.
+        self._only = None if only is None else {Path(p).resolve() for p in only}
         self._root_id = folder_id
         self._root = local_root
         self._log = log
@@ -438,6 +441,8 @@ class DriveMirror:
         return path.resolve().relative_to(self._root.resolve()).as_posix()
 
     def _markdown_files(self) -> list[Path]:
+        if self._only is not None:
+            return sorted(p for p in self._only if p.is_file())
         return sorted(
             p for p in self._root.rglob("*.md")
             if p.is_file() and p.name not in _IGNORED_NAMES
@@ -723,10 +728,14 @@ class DriveUploadWorker(QObject):
     # created, updated, unchanged, failed
     finished = Signal(int, int, int, int)
 
-    def __init__(self, local_root: Path, folder_id: str) -> None:
+    def __init__(
+        self, local_root: Path, folder_id: str,
+        only: Iterable[Path] | None = None,
+    ) -> None:
         super().__init__()
         self._root = local_root
         self._folder_id = folder_id
+        self._only = None if only is None else list(only)
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -742,11 +751,17 @@ class DriveUploadWorker(QObject):
             creds = load_credentials()
             if creds is None:
                 raise DriveError("Not signed in to Google. Click 'Sign in' first.")
-            self.log.emit(f"Uploading {self._root} to Google Drive…")
+            if self._only is None:
+                self.log.emit(f"Uploading {self._root} to Google Drive…")
+            else:
+                self.log.emit(
+                    f"Uploading the {len(self._only)} page(s) from this export "
+                    "to Google Drive…"
+                )
             mirror = DriveMirror(
                 build_service(creds), self._folder_id, self._root,
                 log=self.log.emit, progress=self.progress.emit,
-                cancelled=lambda: self._cancelled,
+                cancelled=lambda: self._cancelled, only=self._only,
             )
             stats = mirror.run()
         except Exception as exc:  # noqa: BLE001

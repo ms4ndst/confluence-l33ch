@@ -331,3 +331,14 @@ def test_a_folder_shared_from_a_drive_we_are_not_in_still_mirrors(tmp_path):
     # The rerun finds what the first run made instead of duplicating it.
     stats = _mirror(drive, tmp_path)
     assert (stats.created, stats.unchanged, stats.failed) == (0, 3, 0)
+
+
+def test_only_the_given_files_are_mirrored(tmp_path):
+    _export(tmp_path)
+    (tmp_path / "Old export.md").write_text("# Old\n", encoding="utf-8")
+    drive = FakeDrive()
+    only = [tmp_path / "Parent" / "Child_2.md", tmp_path / "README.md"]
+    stats = DriveMirror(drive, ROOT_ID, tmp_path, only=only).run()
+    assert stats.created == 2
+    names = {i["name"] for i in drive.items.values() if i["mimeType"] == DOC_MIME}
+    assert names == {"Child", "README"}
