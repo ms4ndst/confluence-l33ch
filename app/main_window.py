@@ -887,7 +887,7 @@ class MainWindow(QMainWindow):
         self.gdrive_client_edit.setToolTip(
             "The OAuth client file Google sign-in needs. Ask IT for a 'Desktop\n"
             "app' OAuth client in the company's Google Cloud project, with the\n"
-            "Google Drive API enabled and the scope\n"
+            "Google Drive API and Google Docs API enabled and the scope\n"
             "https://www.googleapis.com/auth/drive."
         )
         grid.addWidget(self.gdrive_client_edit, 1, 1)
@@ -1709,7 +1709,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "OAuth client file required",
                 "Select the OAuth client JSON file first (ask IT for a "
-                "'Desktop app' OAuth client with the Google Drive API enabled).",
+                "'Desktop app' OAuth client with the Google Drive and Google "
+                "Docs APIs enabled).",
             )
             return
         self.gdrive_signin_button.setEnabled(False)

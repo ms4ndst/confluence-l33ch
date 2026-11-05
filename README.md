@@ -417,7 +417,9 @@ clients there, IT has to do these steps and send you the file.
 1. Open <https://console.cloud.google.com> and pick (or create) the project
    in the selector at the top.
 2. **APIs & Services → Library** → search for **Google Drive API** →
-   **Enable**.
+   **Enable**. Do the same for **Google Docs API**: the app uses it to make
+   the Docs pageless. Without it uploads still work, but the Docs are laid
+   out on 8.5×11 pages.
 3. Configure the consent screen once per project: **Google Auth Platform**
    (older consoles: **APIs & Services → OAuth consent screen**). Fill in an
    app name and support email, and set **Audience** to **Internal**. That
@@ -469,6 +471,9 @@ controls → App access control**.
 * Points links between exported pages at the target Docs, and uploads
   locally linked files (`files/…`) so their links work too. `README.md`
   becomes a **README** Doc linking every page.
+* Makes every Doc **pageless**, so wide tables keep their width and there
+  are no page breaks in the middle of a page. Docs uploaded before this
+  existed are switched on the next upload, without re-uploading content.
 
 **Re-uploading (Confluence stays the master)**
 

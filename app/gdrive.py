@@ -16,6 +16,12 @@ What it does on every run:
   needs a login it doesn't have.
 * Rewrites links between exported pages to the target Docs' URLs, and
   uploads locally linked files (``files/…``) so their links work too.
+* Switches every Doc to pageless mode through the Docs API. Drive's import
+  lays a Doc out on Letter-size pages, which squeezes wide Confluence tables
+  and breaks pages mid-content; a wiki page has no page size to keep. The
+  import also splits the page width evenly between a table's columns, so
+  each table's columns are resized to their content (a table wider than
+  the window scrolls sideways) and its header row repeats.
 
 Re-runs are idempotent. Every item it creates is tagged with Drive
 ``appProperties`` — ``l33chRoot`` (the destination folder) and ``l33chKey``
@@ -72,6 +78,21 @@ RETRIES = 5
 
 # Never uploaded: the app's own bookkeeping.
 _IGNORED_NAMES = frozenset({STATE_FILENAME, LOG_FILENAME})
+
+# Docs' documentMode for a continuous, page-size-free document.
+PAGELESS = "PAGELESS"
+# Tag value for a Doc whose layout has been fixed up. Bump it when the fix-up
+# changes, so the next upload redoes Docs that already carry an older one.
+LAYOUT_VERSION = "pageless-tables-1"
+# Column sizing, in points: roughly one character of 11pt Arial, plus cell
+# padding, and the narrowest/widest a column gets.
+_PT_PER_CHAR = 6.0
+_CELL_PADDING_PT = 12.0
+_MIN_COLUMN_PT = 40.0
+_MAX_COLUMN_CHARS = 32
+# What a Docs API call says when the API is off in the client's Cloud project.
+_DOCS_API_OFF = ("SERVICE_DISABLED", "accessNotConfigured",
+                 "has not been used in project")
 
 _FOLDER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 _FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---[ \t]*(?:\n|\Z)", re.DOTALL)
@@ -268,7 +289,9 @@ class DriveMirror:
     """Sync a local export folder into one Drive folder.
 
     ``service`` is a Drive v3 resource from ``googleapiclient.discovery.build``
-    — injected, so tests can drive this with a fake.
+    — injected, so tests can drive this with a fake. ``docs`` is a Docs v1
+    resource, used only to make the Docs pageless; without it they keep
+    Drive's default Letter-size pages.
     """
 
     def __init__(
@@ -280,8 +303,10 @@ class DriveMirror:
         progress: Callable[[int, int, str], None] = lambda *_a: None,
         cancelled: Callable[[], bool] = lambda: False,
         only: Iterable[Path] | None = None,
+        docs: Any = None,
     ) -> None:
         self._files = service.files()
+        self._docs = docs.documents() if docs is not None else None
         # Mirror just these .md files instead of every one under local_root.
         self._only = None if only is None else {Path(p).resolve() for p in only}
         self._root_id = folder_id
@@ -565,6 +590,7 @@ class DriveMirror:
             parent = self._folder(rel.rpartition("/")[0])
             if key not in self._existing:
                 self._create_doc(key, title, parent, data, digest)
+                self._fix_layout(key, rel)
                 self.stats.created += 1
                 action = "created"
             else:
@@ -572,8 +598,14 @@ class DriveMirror:
                 if self._stored_hash(key) == digest:
                     if not relink:
                         self.stats.unchanged += 1
+                    # Docs uploaded before the current layout fix-up get it
+                    # now, without touching their content.
+                    if self._layout(key) != LAYOUT_VERSION:
+                        self._fix_layout(key, rel)
                     return
                 self._put_content(key, data, "text/html", digest)
+                # New content comes in on Drive's default page setup.
+                self._fix_layout(key, rel)
                 if not relink:
                     self.stats.updated += 1
                 action = "relinked" if relink else "updated"
@@ -599,6 +631,54 @@ class DriveMirror:
         self._existing[key] = {"id": created["id"], "name": title,
                                "parents": [parent],
                                "appProperties": {"l33chHash": digest}}
+
+    def _layout(self, key: str) -> str:
+        item = self._existing.get(key) or {}
+        return (item.get("appProperties") or {}).get("l33chLayout", "")
+
+    def _fix_layout(self, key: str, rel: str) -> None:
+        """Make the Doc pageless and size its tables, then tag it as done.
+
+        A failure here doesn't fail the page — its content is in Drive, just
+        laid out on Letter pages — so it's logged and the next run retries.
+        """
+        if self._docs is None:
+            return
+        item = self._existing[key]
+        try:
+            doc = self._docs.get(
+                documentId=item["id"], fields=_TABLE_FIELDS,
+            ).execute(num_retries=RETRIES)
+            requests = [{"updateDocumentStyle": {
+                "documentStyle": {"documentFormat": {"documentMode": PAGELESS}},
+                "fields": "documentFormat",
+            }}]
+            for element in (doc.get("body") or {}).get("content", []):
+                if "table" in element:
+                    requests += table_requests(element["startIndex"],
+                                               element["table"])
+            self._docs.batchUpdate(
+                documentId=item["id"], body={"requests": requests},
+            ).execute(num_retries=RETRIES)
+        except Exception as exc:  # noqa: BLE001 — googleapiclient HttpError
+            if any(s in str(exc) for s in _DOCS_API_OFF):
+                self._log(
+                    "! The Google Docs API isn't enabled for the OAuth client's "
+                    "Cloud project, so the Docs keep 8.5×11 pages. Ask IT to "
+                    "enable 'Google Docs API' in that project, then upload "
+                    "again — existing Docs are switched without re-uploading."
+                )
+                self._docs = None
+            else:
+                self._log(f"  ! Could not fix the layout of {rel}: {exc}")
+            return
+        if self._layout(key) != LAYOUT_VERSION:
+            self._files.update(
+                fileId=item["id"],
+                body={"appProperties": {"l33chLayout": LAYOUT_VERSION}},
+                fields="id", supportsAllDrives=True,
+            ).execute(num_retries=RETRIES)
+            item.setdefault("appProperties", {})["l33chLayout"] = LAYOUT_VERSION
 
     def _fail(self, rel: str, exc: Exception) -> None:
         message = f"{rel}: {type(exc).__name__}: {exc}"
@@ -674,6 +754,69 @@ def build_service(creds):
     from googleapiclient.discovery import build
 
     return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+_TABLE_FIELDS = ("body(content(startIndex,table(tableRows(tableCells("
+                 "content(paragraph(elements(textRun(content)))))))))")
+
+
+def _cell_text(cell: dict) -> str:
+    return "".join(
+        run.get("textRun", {}).get("content", "")
+        for block in cell.get("content", [])
+        for run in (block.get("paragraph") or {}).get("elements", [])
+    ).strip()
+
+
+def table_column_widths(table: dict) -> list[float]:
+    """A width in points for each column, from the text in it.
+
+    A column gets as wide as its longest cell up to ``_MAX_COLUMN_CHARS``
+    characters, and never narrower than its longest word, so short values
+    stay on one line and words aren't broken mid-letter the way the
+    import's even split breaks them.
+    """
+    longest: list[int] = []
+    for row in table.get("tableRows", []):
+        for col, cell in enumerate(row.get("tableCells", [])):
+            text = _cell_text(cell)
+            words = max((len(w) for w in text.split()), default=0)
+            lines = max((len(line) for line in text.splitlines()), default=0)
+            chars = max(words, min(lines, _MAX_COLUMN_CHARS))
+            if col == len(longest):
+                longest.append(chars)
+            else:
+                longest[col] = max(longest[col], chars)
+    return [max(_MIN_COLUMN_PT, n * _PT_PER_CHAR + _CELL_PADDING_PT)
+            for n in longest]
+
+
+def table_requests(start_index: int, table: dict) -> list[dict]:
+    """Docs API requests that size a table's columns and pin its header row."""
+    location = {"index": start_index}
+    requests: list[dict] = [
+        {"updateTableColumnProperties": {
+            "tableStartLocation": location,
+            "columnIndices": [col],
+            "tableColumnProperties": {
+                "widthType": "FIXED_WIDTH",
+                "width": {"magnitude": width, "unit": "PT"},
+            },
+            "fields": "widthType,width",
+        }}
+        for col, width in enumerate(table_column_widths(table))
+    ]
+    if len(table.get("tableRows", [])) > 1:
+        requests.append({"pinTableHeaderRows": {
+            "tableStartLocation": location, "pinnedHeaderRowsCount": 1,
+        }})
+    return requests
+
+
+def build_docs_service(creds):
+    from googleapiclient.discovery import build
+
+    return build("docs", "v1", credentials=creds, cache_discovery=False)
 
 
 def account_email(service) -> str:
@@ -762,6 +905,7 @@ class DriveUploadWorker(QObject):
                 build_service(creds), self._folder_id, self._root,
                 log=self.log.emit, progress=self.progress.emit,
                 cancelled=lambda: self._cancelled, only=self._only,
+                docs=build_docs_service(creds),
             )
             stats = mirror.run()
         except Exception as exc:  # noqa: BLE001

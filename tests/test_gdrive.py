@@ -9,12 +9,15 @@ import pytest
 from app.gdrive import (
     DOC_MIME,
     FOLDER_MIME,
+    LAYOUT_VERSION,
     DriveMirror,
     checkboxes_to_symbols,
     page_identity,
     parse_folder_id,
     rewrite_html,
     split_front_matter,
+    table_column_widths,
+    table_requests,
 )
 
 pytest.importorskip("googleapiclient")
@@ -342,3 +345,124 @@ def test_only_the_given_files_are_mirrored(tmp_path):
     assert stats.created == 2
     names = {i["name"] for i in drive.items.values() if i["mimeType"] == DOC_MIME}
     assert names == {"Child", "README"}
+
+
+class FakeDocs:
+    """Records the Docs API calls DriveMirror makes."""
+
+    def __init__(self, error=None, content=None):
+        self.calls: list[tuple[str, dict]] = []
+        self.error = error
+        self.content = content or []
+
+    def documents(self):
+        return self
+
+    def get(self, documentId, fields=None):
+        def run():
+            if self.error:
+                raise RuntimeError(self.error)
+            return {"body": {"content": self.content}}
+        return _Call(run)
+
+    def batchUpdate(self, documentId, body):
+        def run():
+            if self.error:
+                raise RuntimeError(self.error)
+            self.calls.append((documentId, body))
+            return {}
+        return _Call(run)
+
+
+def _doc_ids(drive):
+    return {i["id"] for i in drive.items.values() if i["mimeType"] == DOC_MIME}
+
+
+def test_docs_are_made_pageless_once(tmp_path):
+    _export(tmp_path)
+    drive, docs = FakeDrive(), FakeDocs()
+    DriveMirror(drive, ROOT_ID, tmp_path, docs=docs).run()
+
+    assert {doc_id for doc_id, _ in docs.calls} == _doc_ids(drive)
+    style = docs.calls[0][1]["requests"][0]["updateDocumentStyle"]
+    assert style["documentStyle"]["documentFormat"]["documentMode"] == "PAGELESS"
+    assert all(drive.items[i]["appProperties"]["l33chLayout"] == LAYOUT_VERSION
+               for i in _doc_ids(drive))
+
+    docs.calls.clear()
+    DriveMirror(drive, ROOT_ID, tmp_path, docs=docs).run()
+    assert docs.calls == []
+
+
+def test_older_paged_docs_are_switched_without_reuploading(tmp_path):
+    _export(tmp_path)
+    drive = FakeDrive()
+    _mirror(drive, tmp_path)               # no Docs API: left paginated
+    uploads, docs = drive.uploads, FakeDocs()
+    stats = DriveMirror(drive, ROOT_ID, tmp_path, docs=docs).run()
+    assert stats.unchanged == 3 and drive.uploads == uploads
+    assert {doc_id for doc_id, _ in docs.calls} == _doc_ids(drive)
+
+
+def test_a_disabled_docs_api_is_reported_once_and_pages_still_upload(tmp_path):
+    _export(tmp_path)
+    logs: list[str] = []
+    docs = FakeDocs(error="403 ... 'reason': 'SERVICE_DISABLED'")
+    stats = DriveMirror(FakeDrive(), ROOT_ID, tmp_path, log=logs.append,
+                        docs=docs).run()
+    assert (stats.created, stats.failed) == (3, 0)
+    assert sum("Google Docs API isn't enabled" in line for line in logs) == 1
+
+
+def test_docs_tagged_by_an_older_layout_fix_are_redone(tmp_path):
+    _export(tmp_path)
+    drive = FakeDrive()
+    DriveMirror(drive, ROOT_ID, tmp_path, docs=FakeDocs()).run()
+    for i in _doc_ids(drive):
+        drive.items[i]["appProperties"]["l33chLayout"] = "PAGELESS"
+    docs = FakeDocs()
+    DriveMirror(drive, ROOT_ID, tmp_path, docs=docs).run()
+    assert {doc_id for doc_id, _ in docs.calls} == _doc_ids(drive)
+
+
+def _table(*rows):
+    return {"tableRows": [
+        {"tableCells": [
+            {"content": [{"paragraph": {"elements": [
+                {"textRun": {"content": text + "\n"}}]}}]}
+            for text in row
+        ]} for row in rows
+    ]}
+
+
+def test_table_columns_are_sized_to_their_content():
+    table = _table(
+        ["Abbreviation", "Customer", "Notes"],
+        ["ABF", "Arbetarnas Bildningsförbund ABF",
+         "Only applicable before 2023-08-31. After that access rights are "
+         "automatically removed in other processes"],
+    )
+    short, name, notes = table_column_widths(table)
+    assert short == len("Abbreviation") * 6 + 12      # longest word, one line
+    assert name == len("Arbetarnas Bildningsförbund ABF") * 6 + 12
+    assert notes == 32 * 6 + 12                       # long text wraps
+
+
+def test_table_requests_set_fixed_widths_and_pin_the_header():
+    requests = table_requests(5, _table(["A", "B"], ["1", "2"]))
+    widths = [r["updateTableColumnProperties"] for r in requests[:2]]
+    assert [w["columnIndices"] for w in widths] == [[0], [1]]
+    assert all(w["tableStartLocation"] == {"index": 5} for w in widths)
+    assert widths[0]["tableColumnProperties"]["widthType"] == "FIXED_WIDTH"
+    assert requests[2] == {"pinTableHeaderRows": {
+        "tableStartLocation": {"index": 5}, "pinnedHeaderRowsCount": 1}}
+
+
+def test_tables_in_a_doc_are_resized_in_the_same_update(tmp_path):
+    _export(tmp_path)
+    docs = FakeDocs(content=[{"startIndex": 1, "paragraph": {}},
+                             {"startIndex": 9, "table": _table(["A"], ["1"])}])
+    DriveMirror(FakeDrive(), ROOT_ID, tmp_path, docs=docs).run()
+    kinds = [next(iter(r)) for r in docs.calls[0][1]["requests"]]
+    assert kinds == ["updateDocumentStyle", "updateTableColumnProperties",
+                     "pinTableHeaderRows"]
